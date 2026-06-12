@@ -10,12 +10,17 @@ Complete patterns for all n8n credential types.
 4. [Basic Auth Authentication](#basic-auth-authentication)
 5. [OAuth2 Authentication](#oauth2-authentication)
 6. [Custom Authentication](#custom-authentication)
-7. [Credential Testing](#credential-testing)
-8. [Multiple Auth Methods](#multiple-auth-methods)
+7. [preAuthentication (Session-Token APIs)](#preauthentication-session-token-apis)
+8. [Credential Testing](#credential-testing)
+9. [Multiple Auth Methods](#multiple-auth-methods)
+10. [Lint-Enforced Naming](#lint-enforced-naming)
+11. [Exposing Credentials to the HTTP Request Node](#exposing-credentials-to-the-http-request-node)
 
 ## Credential File Structure
 
 Every credential file lives in `credentials/<Name>Api.credentials.ts` and exports a class implementing `ICredentialType`.
+
+The linter enforces credential naming: the `name` field must start with a lowercase letter and end with `Api` (e.g. `myServiceApi`); the class name must also end with `Api`; OAuth2 credentials must use the `OAuth2Api` class-name suffix and include 'OAuth2' in both `name` and `displayName`. All are error-level rules (`cred-class-name-field-conventions`, `cred-class-name-suffix`, `cred-class-oauth2-naming`). See [Lint-Enforced Naming](#lint-enforced-naming) below.
 
 ```typescript
 import type {
@@ -28,6 +33,7 @@ import type {
 
 export class MyServiceApi implements ICredentialType {
   // Internal name — must match the node's credentials[].name
+  // (lint-enforced: starts lowercase, ends with 'Api')
   name = 'myServiceApi';
 
   // Display name shown in the credentials UI
@@ -269,7 +275,7 @@ export class MyServiceApi implements ICredentialType {
       name: 'domain',
       type: 'string',
       default: '',
-      placeholder: 'https://yourcompany.myservice.com',
+      placeholder: 'e.g. https://yourcompany.myservice.com',
     },
     {
       displayName: 'API Token',
@@ -300,9 +306,90 @@ export class MyServiceApi implements ICredentialType {
 }
 ```
 
+## preAuthentication (Session-Token APIs)
+
+For APIs that exchange long-lived credentials (e.g. an API key or username/password) for a short-lived session token, implement `preAuthentication`. n8n calls it only when the expirable property is empty or expired, stores the returned value in the credential data, and re-runs it automatically when the token expires.
+
+The exact signature on `ICredentialType`:
+
+```typescript
+preAuthentication?: (
+  this: IHttpRequestHelper,
+  credentials: ICredentialDataDecryptedObject,
+) => Promise<IDataObject>;
+```
+
+Pair it with a hidden property carrying `typeOptions: { expirable: true }` that stores the session token (this is the pattern used by the built-in Metabase credential):
+
+```typescript
+import type {
+  IAuthenticateGeneric,
+  ICredentialDataDecryptedObject,
+  ICredentialTestRequest,
+  ICredentialType,
+  IHttpRequestHelper,
+  INodeProperties,
+  Icon,
+} from 'n8n-workflow';
+
+export class MyServiceApi implements ICredentialType {
+  name = 'myServiceApi';
+  displayName = 'My Service API';
+  documentationUrl = 'https://docs.myservice.com/api';
+  icon: Icon = 'file:myService.svg';
+
+  properties: INodeProperties[] = [
+    // Hidden, expirable property holding the session token
+    {
+      displayName: 'Session Token',
+      name: 'sessionToken',
+      type: 'hidden',
+      typeOptions: {
+        expirable: true,
+      },
+      default: '',
+    },
+    {
+      displayName: 'API Key',
+      name: 'apiKey',
+      type: 'string',
+      typeOptions: { password: true },
+      default: '',
+    },
+  ];
+
+  // Only called when "sessionToken" (the expirable property) is empty or expired
+  async preAuthentication(this: IHttpRequestHelper, credentials: ICredentialDataDecryptedObject) {
+    const { token } = (await this.helpers.httpRequest({
+      method: 'POST',
+      url: 'https://api.myservice.com/v1/session',
+      body: { apiKey: credentials.apiKey },
+    })) as { token: string };
+    // Returned object is merged into the stored credential data
+    return { sessionToken: token };
+  }
+
+  authenticate: IAuthenticateGeneric = {
+    type: 'generic',
+    properties: {
+      headers: {
+        'X-Session-Token': '={{$credentials.sessionToken}}',
+      },
+    },
+  };
+
+  test: ICredentialTestRequest = {
+    request: {
+      baseURL: 'https://api.myservice.com/v1',
+      url: '/me',
+    },
+  };
+}
+```
+
 ## Credential Testing
 
-The `test` property sends a lightweight request to verify credentials work. It runs when the user clicks "Test" in the credentials dialog.
+The `test` property sends a lightweight request to verify credentials work. It runs automatically when the user saves the credential in the credentials dialog; users can re-run it via the 'Retry credential test' action.
 
 ```typescript
 // Simple test against a known endpoint:
@@ -322,7 +409,44 @@ test: ICredentialTestRequest = {
 };
 ```
 
-If the request returns a 2xx status, credentials pass. Any error response means failure.
+By default a 2xx response passes and any error response fails. You can customize this with the optional `rules` array on `ICredentialTestRequest`: `{ type: 'responseCode', properties: { value: 403, message: '...' } }` to fail on a specific status code, or `{ type: 'responseSuccessBody', properties: { key, value, message } }` to fail when an API returns 200 with an error body.
+
+```typescript
+// For APIs that return 200 with an error payload (pattern from the built-in Slack credential):
+test: ICredentialTestRequest = {
+  request: {
+    baseURL: 'https://api.myservice.com/v1',
+    url: '/auth/test',
+  },
+  rules: [
+    {
+      type: 'responseSuccessBody',
+      properties: {
+        key: 'error',
+        value: 'invalid_auth',
+        message: 'Invalid access token',
+      },
+    },
+  ],
+};
+
+// Fail on a specific status code with a custom message:
+test: ICredentialTestRequest = {
+  request: {
+    baseURL: 'https://api.myservice.com/v1',
+    url: '/me',
+  },
+  rules: [
+    {
+      type: 'responseCode',
+      properties: {
+        value: 403,
+        message: 'Does your API key have the required scopes?',
+      },
+    },
+  ],
+};
+```
 
 ## Multiple Auth Methods
 
@@ -365,6 +489,39 @@ properties: [
 ],
 ```
 
+## Lint-Enforced Naming
+
+The community-nodes linter (`@n8n/eslint-plugin-community-nodes`, run via `npm run lint`) enforces credential naming and testing conventions at error level:
+
+| Rule | Requirement |
+|------|-------------|
+| `cred-class-name-field-conventions` | The `name` field must start with a lowercase letter and end with `Api` (e.g. `myServiceApi`) |
+| `cred-class-name-suffix` | The class name must end with `Api` (e.g. `MyServiceApi`) |
+| `cred-class-oauth2-naming` | OAuth2 credentials: class name must end with `OAuth2Api`, and both `name` and `displayName` must include 'OAuth2' |
+| `credential-documentation-url` | `documentationUrl` must be a valid URL (or a lowercase alphanumeric slug, where slugs are allowed) |
+| `credential-test-required` | Every credential needs a `test` property or a node-side `testedBy` — except classes extending `oAuth2Api`, which are exempt (do NOT add `test` to them; they are validated via the OAuth connect flow) |
+
+See [validation.md](validation.md) for the full lint rule catalog and the validation gate protocol.
+
+## Exposing Credentials to the HTTP Request Node
+
+Add `httpRequestNode` to your credential class to make it selectable as a predefined credential type in the generic HTTP Request node:
+
+```typescript
+httpRequestNode = {
+  // Service name shown in the HTTP Request node's credential dropdown
+  name: 'My Service',
+  // Help link to the service's API docs
+  docsUrl: 'https://docs.myservice.com/api',
+  // Pre-filled API base URL
+  apiBaseUrl: 'https://api.myservice.com/v1/',
+};
+```
+
+Notes:
+- `apiBaseUrl` and `apiBaseUrlPlaceholder` are mutually exclusive — use `apiBaseUrlPlaceholder` when the base URL varies per instance (e.g. self-hosted services).
+- Related (optional) `ICredentialType` fields: `supportedNodes?: string[]` lists the node names that use this credential, and `restrictToSupportedNodes?: true` makes the execution engine refuse to decrypt the credential for any node not in `supportedNodes` — including the HTTP Request node and its tool variants.
+
 ## Package.json Registration
 
 Credentials must be registered in `package.json` under the `n8n` attribute:
@@ -397,7 +554,7 @@ properties: INodeProperties[] = [
     name: 'domain',
     type: 'string',
     default: 'https://myinstance.myservice.com',
-    placeholder: 'https://your-instance.myservice.com',
+    placeholder: 'e.g. https://your-instance.myservice.com',
   },
   {
     displayName: 'API Key',
@@ -474,6 +631,6 @@ The `authenticate.properties` object supports these locations:
 - Always use `typeOptions: { password: true }` for secret fields (API keys, tokens, passwords)
 - Add `icon` property with `Icon` type to credential classes (required by linter)
 - Include a `documentationUrl` pointing to the service's auth documentation
-- Always implement a `test` request or use `testedBy` to allow users to validate their credentials
+- Always implement a `test` request or use `testedBy` — except for OAuth2 credentials that extend `oAuth2Api`, which are validated through the OAuth connection flow and are exempt from the `credential-test-required` lint rule (do not add a `test` property to them)
 - For OAuth2, extend `oAuth2Api` and set authorization/token URLs as hidden fields
 - Place a copy of your SVG icon in the `credentials/` folder and reference as `'file:name.svg'`

@@ -28,6 +28,7 @@ Complete template and patterns for building a declarative-style n8n node.
     - [fixedCollection Parameters](#fixedcollection-parameters)
     - [Combining displayOptions show and hide](#combining-displayoptions-show-and-hide)
     - [Advanced displayOptions Conditions](#advanced-displayoptions-conditions)
+    - [Hints and Notices](#hints-and-notices)
     - [Error Handling with ignoreHttpStatusErrors](#error-handling-with-ignorehttpstatuserrors)
     - [Generic Pagination](#generic-pagination)
     - [Cursor-Based Pagination](#cursor-based-pagination)
@@ -35,16 +36,14 @@ Complete template and patterns for building a declarative-style n8n node.
     - [File Upload with preSend](#file-upload-with-presend)
     - [File Download with postReceive](#file-download-with-postreceive)
     - [Modular Operations Structure](#modular-operations-structure)
+    - [customOperations — programmatic escape hatch](#customoperations--programmatic-escape-hatch)
     - [TypeScript Type Reference](#typescript-type-reference)
 
 ## Complete Base File Template
 
 ```typescript
-import {
-  INodeType,
-  INodeTypeDescription,
-  NodeConnectionType,
-} from 'n8n-workflow';
+import { NodeConnectionTypes } from 'n8n-workflow';
+import type { INodeType, INodeTypeDescription } from 'n8n-workflow';
 
 export class MyService implements INodeType {
   description: INodeTypeDescription = {
@@ -58,8 +57,8 @@ export class MyService implements INodeType {
     defaults: {
       name: 'My Service',
     },
-    inputs: [NodeConnectionType.Main],
-    outputs: [NodeConnectionType.Main],
+    inputs: [NodeConnectionTypes.Main],
+    outputs: [NodeConnectionTypes.Main],
     usableAsTool: true,
     credentials: [
       {
@@ -189,7 +188,7 @@ export class MyService implements INodeType {
         type: 'string',
         required: true,
         default: '',
-        placeholder: 'user@example.com',
+        placeholder: 'e.g. name@email.com',
         description: 'The email address of the contact',
         displayOptions: {
           show: {
@@ -470,7 +469,7 @@ url: '=/v3/attributes/{{$parameter.category}}/{{encodeURI($parameter.name)}}'
 
 ### Declarative Pagination
 
-For list operations that need automatic pagination:
+For list operations that need automatic pagination. **Pagination only runs when `paginate` is truthy** — defining `operations.pagination` alone is dead code. Set `send: { paginate: true }` on the operation (or drive it from a Return All parameter with `paginate: '={{$value}}'`, shown in [Custom Pagination Functions](#custom-pagination-functions)):
 
 ```typescript
 {
@@ -482,6 +481,9 @@ For list operations that need automatic pagination:
       method: 'GET',
       url: '/items',
     },
+    send: {
+      paginate: true,  // Required — without this, only one page is fetched
+    },
     output: {
       postReceive: [
         { type: 'rootProperty', properties: { property: 'data' } },
@@ -492,8 +494,8 @@ For list operations that need automatic pagination:
       pagination: {
         type: 'offset',
         properties: {
-          limitParameter: 'per_page',
-          offsetParameter: 'page',
+          limitParameter: 'limit',
+          offsetParameter: 'offset',
           pageSize: 100,
           type: 'query',
         },
@@ -502,6 +504,8 @@ For list operations that need automatic pagination:
   },
 },
 ```
+
+**The built-in `offset` type is for record-offset APIs only.** The engine sets `offsetParameter` to 0 and increments it by `pageSize` each request (0, 100, 200, ...) — so pair it with query params like `offset`/`limit`. For page-numbered APIs (`page=1,2,3...`) do **not** point `offsetParameter` at a `page` param (it would request pages 0/100/200); use a custom pagination function or [Generic Pagination](#generic-pagination) instead.
 
 ## Request Defaults
 
@@ -525,10 +529,14 @@ Place alongside the `.node.ts` file as `<Name>.node.json`:
 
 ```json
 {
-  "node": "n8n-nodes-<package>.<nodeName>",
+  "node": "n8n-nodes-myservice",
   "nodeVersion": "1.0",
   "codexVersion": "1.0",
   "categories": ["Marketing & Content"],
+  "subcategories": {
+    "Marketing & Content": ["Email Marketing"]
+  },
+  "alias": ["CRM", "Newsletter", "MyServiceClassic"],
   "resources": {
     "credentialDocumentation": [
       {
@@ -544,16 +552,22 @@ Place alongside the `.node.ts` file as `<Name>.node.json`:
 }
 ```
 
+Field notes:
+
+- **`categories`** — top-level categories shown in the nodes panel.
+- **`subcategories`** (optional) — `{ [category]: string[] }`, mapping each category to subcategory names within it.
+- **`alias`** (optional) — `string[]` of search synonyms matched by the nodes-panel search. Add common synonyms and former product names so users find the node under terms they actually type.
+- **`node`** — follow the official `n8n-node` scaffold and use the bare npm package name (e.g. `"node": "n8n-nodes-myservice"`).
+
+The n8n runtime only consumes `categories`, `subcategories`, `resources`, and `alias` — the loader never reads `node`, `nodeVersion`, or `codexVersion`.
+
 ## Complete Working Example
 
 A full declarative node for a hypothetical "TaskBoard" API:
 
 ```typescript
-import {
-  INodeType,
-  INodeTypeDescription,
-  NodeConnectionType,
-} from 'n8n-workflow';
+import { NodeConnectionTypes } from 'n8n-workflow';
+import type { INodeType, INodeTypeDescription } from 'n8n-workflow';
 
 export class TaskBoard implements INodeType {
   description: INodeTypeDescription = {
@@ -567,8 +581,8 @@ export class TaskBoard implements INodeType {
     defaults: {
       name: 'TaskBoard',
     },
-    inputs: [NodeConnectionType.Main],
-    outputs: [NodeConnectionType.Main],
+    inputs: [NodeConnectionTypes.Main],
+    outputs: [NodeConnectionTypes.Main],
     usableAsTool: true,
     credentials: [
       {
@@ -1020,8 +1034,9 @@ export const queryPreSend = async function (
   this: IExecuteSingleFunctions,
   requestOptions: IHttpRequestOptions,
 ): Promise<IHttpRequestOptions> {
-  const readOnly = this.getNodeParameter('readOnly', 0) as boolean;
-  const query = this.getNodeParameter('query', 0) as string;
+  // IExecuteSingleFunctions: no item index — the current item is implicit
+  const readOnly = this.getNodeParameter('readOnly') as boolean;
+  const query = this.getNodeParameter('query') as string;
 
   if (readOnly) {
     requestOptions.method = 'GET';
@@ -1043,7 +1058,7 @@ export const applyFilters = async function (
   this: IExecuteSingleFunctions,
   requestOptions: IHttpRequestOptions,
 ): Promise<IHttpRequestOptions> {
-  const additionalOptions = this.getNodeParameter('additionalOptions', 0, {}) as IDataObject;
+  const additionalOptions = this.getNodeParameter('additionalOptions', {}) as IDataObject;
 
   if (additionalOptions.filters) {
     const filters = additionalOptions.filters as IDataObject;
@@ -1067,7 +1082,7 @@ export const applyFilters = async function (
 
 **Key things available in `this` (IExecuteSingleFunctions):**
 - `this.getInputData()` — current input item
-- `this.getNodeParameter(name, fallback)` — read any node parameter
+- `this.getNodeParameter(name, fallback?)` — read any node parameter. Unlike `IExecuteFunctions`, there is **no item index argument** — the current item is implicit (`this.getItemIndex()`), and the second argument is a fallback value. Reserve the `(name, i)` index style for `IExecuteFunctions` in programmatic nodes.
 - `this.getNode().typeVersion` — check the node version
 - `this.getCredentials('credentialName')` — access credential values
 - `this.helpers.httpRequest(options)` — make additional HTTP requests
@@ -1092,14 +1107,15 @@ routing: {
   request: {
     method: 'GET',
     url: '=/records/{{$parameter.recordId}}/files/{{$parameter.fileName}}',
-    returnFullResponse: true,  // Required for custom postReceive to get headers
-    encoding: 'arraybuffer',   // For binary downloads
+    encoding: 'arraybuffer',   // For binary downloads — this is the setting that matters
   },
   output: {
     postReceive: [handleFileDownload],  // Custom function
   },
 }
 ```
+
+Custom postReceive functions always receive the full `IN8nHttpFullResponse` (body, headers, statusCode) — the routing engine forces `returnFullResponse: true` internally before every declarative request. Setting it yourself is harmless but redundant.
 
 **Example — Convert HTTP response into binary data item:**
 ```typescript
@@ -1112,6 +1128,9 @@ export const handleFileDownload = async function (
   response: IN8nHttpFullResponse,
 ): Promise<INodeExecutionData[]> {
   try {
+    // IExecuteSingleFunctions: no item index argument — the current item is implicit
+    const fileName = this.getNodeParameter('fileName') as string;
+
     for (let i = 0; i < items.length; i++) {
       const mimeType = response.headers['content-type'] as string | undefined;
 
@@ -1125,8 +1144,6 @@ export const handleFileDownload = async function (
       if (items[i].binary !== undefined && newItem.binary !== undefined) {
         Object.assign(newItem.binary, items[i].binary);
       }
-
-      const fileName = this.getNodeParameter('fileName', i) as string;
 
       // Convert response body to Buffer
       const data = response.body instanceof Buffer
@@ -1184,11 +1201,15 @@ routing: {
 ```
 
 **Example — Page-based pagination with duplicate detection:**
+
+`makeRoutingRequest` returns `INodeExecutionData[]` — items shaped `{ json: ... }` — so always access response fields via `.json`, and return the items directly (no `returnJsonArray`, which would double-wrap them):
+
 ```typescript
 operations: {
   pagination: async function(this, requestOptions) {
-    const returnData = [];
+    const returnData: INodeExecutionData[] = [];
     let page = 0;
+    // Second argument is the fallback value, not an item index
     const limit = this.getNodeParameter('limit', 500) as number;
     const returnAll = this.getNodeParameter('returnAll', false) as boolean;
     const maxPages = 100;
@@ -1203,15 +1224,15 @@ operations: {
 
       if (!Array.isArray(responseData) || responseData.length === 0) break;
 
-      // Detect duplicate pages (API returning same data)
-      if (responseData[0]?.id && seenIds.has(responseData[0].id)) break;
+      // Detect duplicate pages (API returning same data) — fields live under .json
+      if (responseData[0]?.json.id && seenIds.has(responseData[0].json.id)) break;
 
       for (const item of responseData) {
-        if (item.id) seenIds.add(item.id);
+        if (item.json.id) seenIds.add(item.json.id);
         returnData.push(item);
 
         if (!returnAll && returnData.length >= limit) {
-          return this.helpers.returnJsonArray(returnData.slice(0, limit));
+          return returnData.slice(0, limit);
         }
       }
 
@@ -1220,9 +1241,9 @@ operations: {
     }
 
     if (!returnAll && returnData.length > limit) {
-      return this.helpers.returnJsonArray(returnData.slice(0, limit));
+      return returnData.slice(0, limit);
     }
-    return this.helpers.returnJsonArray(returnData);
+    return returnData;
   },
 }
 ```
@@ -1283,7 +1304,7 @@ Use `type: 'resourceLocator'` instead of plain string inputs when users need to 
       displayName: 'By URL',
       name: 'url',
       type: 'string',
-      placeholder: 'https://app.example.com/projects/abc123',
+      placeholder: 'e.g. https://app.example.com/projects/abc123',
       validation: [
         {
           type: 'regex',
@@ -1303,7 +1324,7 @@ Use `type: 'resourceLocator'` instead of plain string inputs when users need to 
       displayName: 'ID',
       name: 'id',
       type: 'string',
-      placeholder: 'abc123',
+      placeholder: 'e.g. abc123',
       validation: [
         {
           type: 'regex',
@@ -1435,11 +1456,12 @@ export async function getFields(this: ILoadOptionsFunctions): Promise<ResourceMa
 
 **Reading resourceMapper values in a preSend function:**
 ```typescript
-const dataMode = this.getNodeParameter('fields.mappingMode', 0) as string;
+// IExecuteSingleFunctions: no item index — second argument would be a fallback value
+const dataMode = this.getNodeParameter('fields.mappingMode') as string;
 
 if (dataMode === 'defineBelow') {
   // User explicitly mapped fields in the UI
-  const mappingValues = this.getNodeParameter('fields.value', 0) as IDataObject;
+  const mappingValues = this.getNodeParameter('fields.value') as IDataObject;
   requestOptions.body = { fields: mappingValues };
 } else if (dataMode === 'autoMapInputData') {
   // Automatically use all input fields
@@ -1665,6 +1687,52 @@ displayOptions: {
 - `'@tool'`: Filter by AI tool usage — `{ show: { '@tool': [true] } }`
 - `'@feature'`: Filter by node feature flags
 
+### Hints and Notices
+
+Three ways to surface guidance in the node UI:
+
+**1. Description-level hints** — set `hints` on the node `description` to display messages in the input panel, output panel, or node details view (NDV):
+
+```typescript
+description: INodeTypeDescription = {
+  // ...
+  hints: [
+    {
+      message: 'Select "Return All" to fetch every record',  // HTML allowed
+      type: 'info',                       // 'info' | 'warning' | 'danger' (default: 'info')
+      location: 'outputPane',             // 'inputPane' | 'outputPane' | 'ndv' (default: input + output)
+      whenToDisplay: 'beforeExecution',   // 'always' | 'beforeExecution' | 'afterExecution' (default: 'always')
+      displayCondition: '={{ $parameter["returnAll"] === false }}',  // Optional expression — show only when true
+    },
+  ],
+};
+```
+
+**2. Parameter-level hint** — a small line of text under the input field. Add `hint: '...'` to any parameter:
+
+```typescript
+{
+  displayName: 'URL',
+  name: 'url',
+  type: 'string',
+  hint: 'Enter the full URL including https://',
+  default: '',
+}
+```
+
+**3. Notice element** — an inline info box between parameters. Use `type: 'notice'`:
+
+```typescript
+{
+  displayName: 'This operation may take several minutes for large datasets',
+  name: 'notice',
+  type: 'notice',
+  default: '',
+}
+```
+
+Node hints are more powerful and flexible than notices — prefer them for longer messages and anything conditional.
+
 ### Error Handling with ignoreHttpStatusErrors
 
 For declarative nodes that need custom error handling, use `ignoreHttpStatusErrors: true` on the request to prevent n8n from throwing on HTTP errors. Then use a custom `postReceive` function to inspect the response and handle errors:
@@ -1710,7 +1778,7 @@ export const handleErrors = async function (
 
 **Selective error ignoring:** You can ignore only specific status codes:
 ```typescript
-ignoreHttpStatusErrors: { except: [401, 403] },  // Still throw on auth errors
+ignoreHttpStatusErrors: { ignore: true, except: [401, 403] },  // Still throw on auth errors
 ```
 
 ### Generic Pagination
@@ -1819,7 +1887,6 @@ export const getCursorPaginator = () => {
     request: {
       method: 'GET',
       url: '/items',
-      returnFullResponse: true,
     },
     send: { paginate: true },
     operations: {
@@ -1860,7 +1927,7 @@ The corresponding credential would have:
   name: 'baseUrl',
   type: 'string',
   default: '',
-  placeholder: 'https://my-instance.example.com/api/v1',
+  placeholder: 'e.g. https://my-instance.example.com/api/v1',
   displayOptions: { show: { customBaseUrl: [true] } },
 },
 ```
@@ -1875,11 +1942,9 @@ const baseUrl = credentials.customBaseUrl
 
 ### File Upload with preSend
 
-Use a preSend function to convert binary input data into multipart form-data for file upload operations:
+Use a preSend function to convert binary input data into multipart form-data for file upload operations. Use the **built-in global `FormData` and `Blob`** — no import needed:
 
 ```typescript
-// eslint-disable-next-line @n8n/community-nodes/no-restricted-imports
-import type FormData from 'form-data';
 import type { IBinaryData, IExecuteSingleFunctions, IHttpRequestOptions } from 'n8n-workflow';
 import { NodeOperationError } from 'n8n-workflow';
 
@@ -1897,24 +1962,19 @@ export const uploadFile = async function (
     );
   }
 
-  const binaryProperty = item.binary[binaryPropertyName] as IBinaryData;
-  const binaryDataBuffer = await this.helpers.getBinaryDataBuffer(binaryPropertyName);
+  const binaryData = item.binary[binaryPropertyName] as IBinaryData;
+  const buffer = await this.helpers.getBinaryDataBuffer(binaryPropertyName);
 
-  // form-data is available in n8n's runtime
-  // eslint-disable-next-line @typescript-eslint/no-require-imports, @n8n/community-nodes/no-restricted-imports
-  const FormDataConstructor = require('form-data');
-  const formData = new FormDataConstructor() as FormData;
-  formData.append('file', binaryDataBuffer, binaryProperty.fileName);
+  // Built-in globals — no import, no extra headers (the HTTP client sets the multipart boundary)
+  const formData = new FormData();
+  formData.append('file', new Blob([buffer], { type: binaryData.mimeType }), binaryData.fileName);
 
   requestOptions.body = formData;
-  requestOptions.headers = {
-    ...requestOptions.headers,
-    ...formData.getHeaders(),
-  };
-
   return requestOptions;
 };
 ```
+
+**Warning — do not import the `form-data` npm package.** It is not in the allowlist of the cloud-only `no-restricted-imports` lint rule (`@n8n/eslint-plugin-community-nodes`), so the import fails `npm run lint`. Adding `// eslint-disable-next-line` comments does not help: n8n's verification scanner (`npx @n8n/scan-community-package`) runs ESLint with `allowInlineConfig: false`, so inline disables are ignored and the package fails verification / Cloud eligibility. The global `FormData`/`Blob` pattern above passes both. See [references/validation.md](validation.md) for the full lint rule catalog and scanner protocol.
 
 **Operation wiring for upload:**
 ```typescript
@@ -1943,7 +2003,7 @@ export const uploadFile = async function (
 
 ### File Download with postReceive
 
-For downloading files, set `encoding: 'arraybuffer'` and `returnFullResponse: true` on the request, then use a custom postReceive to convert the response buffer into n8n binary data:
+For downloading files, set `encoding: 'arraybuffer'` on the request, then use a custom postReceive to convert the response buffer into n8n binary data. (No need for `returnFullResponse` — the routing engine sets it internally, so the postReceive function always gets headers and statusCode.)
 
 ```typescript
 // Operation:
@@ -1954,7 +2014,6 @@ For downloading files, set `encoding: 'arraybuffer'` and `returnFullResponse: tr
   routing: {
     request: {
       method: 'GET',
-      returnFullResponse: true,
       encoding: 'arraybuffer',
       url: '=/records/{{$parameter.recordId}}/files/{{$parameter.fileName}}',
     },
@@ -2047,6 +2106,43 @@ export class MyService implements INodeType {
 }
 ```
 
+### customOperations — programmatic escape hatch
+
+When one or two resource/operation pairs cannot be expressed with routing (multi-step calls, complex aggregation), you don't have to convert the whole node to programmatic style. Define `customOperations` on the class: those specific pairs run as full programmatic functions (with `this: IExecuteFunctions`, just like `execute()`), while routing handles everything else.
+
+```typescript
+import type { IDataObject, IExecuteFunctions, INodeExecutionData, INodeType, INodeTypeDescription } from 'n8n-workflow';
+
+export class MyService implements INodeType {
+  description: INodeTypeDescription = {
+    // ... declarative description with routing on the other operations.
+    // The 'search' operation option needs no routing — customOperations handles it.
+  };
+
+  customOperations = {
+    contact: {
+      async search(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
+        // Full programmatic logic — loop items, make requests, return INodeExecutionData[][]
+        const items = this.getInputData();
+        const returnData: INodeExecutionData[] = [];
+        for (let i = 0; i < items.length; i++) {
+          const query = this.getNodeParameter('query', i) as string;  // IExecuteFunctions: index style is correct here
+          const response = await this.helpers.httpRequestWithAuthentication.call(this, 'myServiceApi', {
+            method: 'GET',
+            url: 'https://api.myservice.com/v1/contacts/search',
+            qs: { q: query },
+          });
+          returnData.push(...this.helpers.returnJsonArray(response.results as IDataObject[]));
+        }
+        return [returnData];
+      },
+    },
+  };
+}
+```
+
+**Rule:** a node must define **either** `execute()` **or** `customOperations` — never both. `customOperations` is invoked instead of `execute` for the matching resource/operation; all other pairs fall through to the routing engine.
+
 ### TypeScript Type Reference
 
 Quick reference for the key TypeScript interfaces used in declarative node development. All types are from `n8n-workflow`.
@@ -2056,10 +2152,12 @@ Quick reference for the key TypeScript interfaces used in declarative node devel
 interface INodePropertyRouting {
   operations?: IN8nRequestOperations;       // Pagination config
   output?: INodeRequestOutput;              // postReceive transforms, maxResults
-  request?: IHttpRequestOptions;            // HTTP method, URL, headers, qs
+  request?: DeclarativeRestApiSettings.HttpRequestOptions;  // HTTP method, URL, headers, qs
   send?: INodeRequestSend;                  // preSend, paginate, body property mapping
 }
 ```
+
+Note: routing uses `DeclarativeRestApiSettings.HttpRequestOptions`, an `IHttpRequestOptions` variant where `url` is **optional** (an operation may set only `method`, with the URL coming from `requestDefaults` or another parameter's routing) and `skipSslCertificateValidation` also accepts an expression string.
 
 **INodeRequestSend** — Controls how parameter values are sent:
 ```typescript
@@ -2085,11 +2183,11 @@ interface INodeRequestOutput {
 ```typescript
 type PostReceiveAction =
   | IPostReceiveBinaryData       // { type: 'binaryData', properties: { destinationProperty: string } }
-  | IPostReceiveFilter           // { type: 'filter', properties: { pass: string } }
+  | IPostReceiveFilter           // { type: 'filter', properties: { pass: boolean | string } }
   | IPostReceiveLimit            // { type: 'limit', properties: { maxResults: number | string } }
   | IPostReceiveRootProperty     // { type: 'rootProperty', properties: { property: string } }
   | IPostReceiveSet              // { type: 'set', properties: { value: string } }
-  | IPostReceiveSetKeyValue      // { type: 'setKeyValue', properties: { [key: string]: string } }
+  | IPostReceiveSetKeyValue      // { type: 'setKeyValue', properties: { [key: string]: string | number } }
   | IPostReceiveSort             // { type: 'sort', properties: { key: string } }
   | ((                           // Custom async function
       this: IExecuteSingleFunctions,
@@ -2146,23 +2244,25 @@ interface IN8nRequestOperationPaginationOffset {
 interface IN8nRequestOperationPaginationGeneric {
   type: 'generic';
   properties: {
-    continue: string;            // Expression → boolean: keep paginating?
-    request: IHttpRequestOptions; // Merged into next request (supports expressions)
+    continue: boolean | string;  // Expression → boolean: keep paginating?
+    request: IRequestOptionsSimplifiedAuth; // Merged into next request (supports expressions)
   };
 }
 ```
 
-**IHttpRequestOptions** — Key fields for declarative routing:
+The per-page `request` override only supports `url`, `qs`, `body`, `headers`, `auth`, and `skipSslCertificateValidation` — you cannot change the HTTP method between pages with generic pagination.
+
+**IHttpRequestOptions** — Key fields for declarative routing (in `routing.request` n8n actually uses the `DeclarativeRestApiSettings.HttpRequestOptions` variant, where `url` is optional):
 ```typescript
 interface IHttpRequestOptions {
-  url: string;
+  url: string;  // Optional in routing.request (DeclarativeRestApiSettings.HttpRequestOptions)
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD';
   headers?: Record<string, string>;
   qs?: Record<string, any>;              // Query string parameters
   body?: any;
   encoding?: 'arraybuffer' | 'blob' | 'document' | 'json' | 'text' | 'stream';
-  returnFullResponse?: boolean;          // Return headers + status in postReceive
-  ignoreHttpStatusErrors?: boolean;      // Don't throw on 4xx/5xx
+  returnFullResponse?: boolean;          // Forced to true by the routing engine for declarative requests
+  ignoreHttpStatusErrors?: boolean | { ignore: true; except: number[] };  // Don't throw on 4xx/5xx (except listed codes)
   timeout?: number;                      // Request timeout in ms
   arrayFormat?: 'indices' | 'brackets' | 'repeat' | 'comma';  // QS array serialization
 }
@@ -2179,7 +2279,7 @@ interface IExecutePaginationFunctions extends IExecuteSingleFunctions {
 }
 ```
 
-**IN8nHttpFullResponse** — Available in custom postReceive when `returnFullResponse: true`:
+**IN8nHttpFullResponse** — Always available in custom postReceive (the routing engine forces `returnFullResponse` internally):
 ```typescript
 interface IN8nHttpFullResponse {
   body: any;

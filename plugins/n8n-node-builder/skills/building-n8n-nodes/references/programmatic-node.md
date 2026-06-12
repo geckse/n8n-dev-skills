@@ -9,9 +9,9 @@ Complete template and patterns for building a programmatic-style n8n node.
 3. [Item Processing Loop](#item-processing-loop)
 4. [Error Handling Patterns](#error-handling-patterns)
 5. [HTTP Request Patterns](#http-request-patterns)
-6. [Item Linking (pairedItem)](#item-linking-paireditem)
+6. [Item Linking (constructExecutionMetaData)](#item-linking-constructexecutionmetadata)
 7. [Binary Data Handling](#binary-data-handling)
-8. [Trigger Node Template](#trigger-node-template)
+8. [Trigger Node Patterns](#trigger-node-patterns)
 9. [Full Versioning Structure](#full-versioning-structure)
 10. [GenericFunctions.ts Pattern](#genericfunctionsts-pattern)
 11. [Complete `this.*` Methods Reference](#complete-this-methods-reference)
@@ -33,7 +33,7 @@ import {
   INodeTypeDescription,
   JsonObject,
   NodeApiError,
-  NodeConnectionType,
+  NodeConnectionTypes,
   NodeOperationError,
 } from 'n8n-workflow';
 
@@ -49,8 +49,8 @@ export class MyService implements INodeType {
     defaults: {
       name: 'My Service',
     },
-    inputs: [NodeConnectionType.Main],
-    outputs: [NodeConnectionType.Main],
+    inputs: [NodeConnectionTypes.Main],
+    outputs: [NodeConnectionTypes.Main],
     usableAsTool: true,
     credentials: [
       {
@@ -138,7 +138,7 @@ export class MyService implements INodeType {
         type: 'string',
         required: true,
         default: '',
-        placeholder: 'user@example.com',
+        placeholder: 'e.g. user@example.com',
         displayOptions: {
           show: {
             resource: ['contact'],
@@ -338,7 +338,9 @@ export class MyService implements INodeType {
           returnData.push(...executionErrorData);
           continue;
         }
-        throw new NodeApiError(this.getNode(), error as JsonObject);
+        // Always pass itemIndex — the node-operation-error-itemindex lint rule
+        // errors on NodeApiError/NodeOperationError thrown in the item loop without it
+        throw new NodeApiError(this.getNode(), error as JsonObject, { itemIndex: i });
       }
     }
 
@@ -346,6 +348,8 @@ export class MyService implements INodeType {
   }
 }
 ```
+
+> **Import note:** `NodeConnectionTypes` (plural) is the const object — use `NodeConnectionTypes.Main` for `inputs`/`outputs`. `NodeConnectionType` (singular) still exists but only as a TypeScript type; using `NodeConnectionType.Main` as a value is a compile error (TS2693) in current n8n-workflow (v2.x).
 
 ## The execute() Method
 
@@ -379,6 +383,26 @@ async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
   return [returnData];
 }
 ```
+
+### Dynamic Post-Execution Hints
+
+Show a contextual message in the UI after the run finishes — useful when the node ran successfully but something deserves the user's attention (real user: the Split Out node, which warns when a configured field was not found in any input item):
+
+```typescript
+// Inside execute(), before returning:
+if (fieldNotFoundInAnyItem) {
+  this.addExecutionHints({
+    message: `The field '${fieldToSplitOut}' wasn't found in any input item`,
+    location: 'outputPane',
+  });
+}
+
+return [returnData];
+```
+
+The hint shape is `NodeExecutionHint`: `{ message: string; type?: 'info' | 'warning' | 'danger'; location?: 'outputPane' | 'inputPane' | 'ndv' }`.
+
+> **Migration note:** older guides show wrapping the return value in `new NodeExecutionOutput([returnData], [{ message: '...', location: 'outputPane' }])`. That class no longer exists in current n8n-workflow (v2.x) — use `this.addExecutionHints(...)` instead.
 
 ## Item Processing Loop
 
@@ -417,8 +441,9 @@ for (let i = 0; i < items.length; i++) {
       });
       continue;
     }
-    // Re-throw as a structured n8n error
-    throw new NodeApiError(this.getNode(), error as JsonObject);
+    // Re-throw as a structured n8n error — include itemIndex (required by the
+    // @n8n/community-nodes/node-operation-error-itemindex lint rule inside item loops)
+    throw new NodeApiError(this.getNode(), error as JsonObject, { itemIndex: i });
   }
 }
 ```
@@ -558,6 +583,28 @@ returnData.push({
 });
 ```
 
+### pairedItem Forms
+
+```typescript
+// Multi-input form — `input` says which input connector the source item came from
+// (optional, defaults to 0):
+returnData.push({
+  json: result,
+  pairedItem: { item: i, input: 0 },
+});
+
+// Propagating when forwarding items from a previous node — carry the existing
+// pairedItem forward instead of re-numbering:
+returnData.push({
+  json: item.json,
+  pairedItem: { item: item.pairedItem as number, input: 0 },
+});
+```
+
+`pairedItem` may also be an **array** of `{ item, input }` objects when one output item is derived from several input items (e.g. an aggregate or merge).
+
+> **Lint note:** the `@n8n/community-nodes/missing-paired-item` rule (error severity) flags any object literal with a `json` property but no `pairedItem` produced in `execute()` — via `.push()`, `.map()`, or return statements. Objects passed through `constructExecutionMetaData` are exempt because it adds `pairedItem` for you. See `references/validation.md` for the full lint rule catalog.
+
 ## Binary Data Handling
 
 For nodes that work with files:
@@ -591,10 +638,12 @@ Trigger nodes are always programmatic. They differ from action nodes in several 
 | Aspect | Action Node | Trigger Node |
 |--------|------------|--------------|
 | `group` | `['transform']` | `['trigger']` |
-| `inputs` | `[NodeConnectionType.Main]` | `[]` (EMPTY) |
+| `inputs` | `[NodeConnectionTypes.Main]` | `[]` (EMPTY) |
 | Method | `execute()` | `webhook()`, `poll()`, or `trigger()` |
 | Class name | `MyService` | `MyServiceTrigger` |
 | File name | `MyService.node.ts` | `MyServiceTrigger.node.ts` |
+
+> **Lint note:** `npm run lint` requires `icon` and `subtitle` on every node description (`require-node-description-fields`) and an explicit `usableAsTool` declaration on every node class (`node-usable-as-tool`). Triggers output Main connections, so they are NOT exempt — declare `usableAsTool: false` on trigger nodes.
 
 ### Pattern 1: Webhook Trigger (Auto-Registered)
 
@@ -604,7 +653,7 @@ The external service supports API-based webhook registration. n8n registers/dere
 import {
   IHookFunctions, IWebhookFunctions, INodeType,
   INodeTypeDescription, IWebhookResponseData,
-  NodeConnectionType,
+  NodeConnectionTypes,
 } from 'n8n-workflow';
 
 export class MyServiceTrigger implements INodeType {
@@ -618,7 +667,8 @@ export class MyServiceTrigger implements INodeType {
     description: 'Starts workflow when My Service events occur',
     defaults: { name: 'My Service Trigger' },
     inputs: [],                            // NO inputs for triggers
-    outputs: [NodeConnectionType.Main],
+    outputs: [NodeConnectionTypes.Main],
+    usableAsTool: false,
     credentials: [{ name: 'myServiceApi', required: true }],
     webhooks: [
       {
@@ -707,12 +757,15 @@ export class MyServiceTrigger implements INodeType {
   description: INodeTypeDescription = {
     displayName: 'My Service Trigger',
     name: 'myServiceTrigger',
+    icon: 'file:myservice.svg',
     group: ['trigger'],
     version: 1,
+    subtitle: 'webhook',
     description: 'Starts workflow on My Service webhook',
     defaults: { name: 'My Service Trigger' },
     inputs: [],
-    outputs: [NodeConnectionType.Main],
+    outputs: [NodeConnectionTypes.Main],
+    usableAsTool: false,
     webhooks: [
       {
         name: 'default',
@@ -724,7 +777,7 @@ export class MyServiceTrigger implements INodeType {
     properties: [],
   };
 
-  // No webhookMethods needed — user configures URL manually
+  // CAUTION: no webhookMethods — user configures the URL manually (see caveat below)
   async webhook(this: IWebhookFunctions): Promise<IWebhookResponseData> {
     const bodyData = this.getBodyData();
     return {
@@ -734,6 +787,8 @@ export class MyServiceTrigger implements INodeType {
 }
 ```
 
+> **Lint caveat:** under the current `@n8n/eslint-plugin-community-nodes` linter, a node that declares `webhooks` but has no `webhookMethods` class property fails the `webhook-lifecycle-complete` rule (error severity), and the n8n verification scan runs the same rule set with inline disables ignored. For community nodes, either implement the `checkExists`/`create`/`delete` lifecycle (Pattern 1) — or accept that this manual-URL pattern fails `npm run lint` and the verification scan as-is.
+
 ### Pattern 3: Poll Trigger
 
 n8n polls the external API on a schedule, checking for new data since the last poll.
@@ -741,19 +796,22 @@ n8n polls the external API on a schedule, checking for new data since the last p
 ```typescript
 import {
   IPollFunctions, INodeType, INodeTypeDescription,
-  INodeExecutionData, NodeConnectionType,
+  INodeExecutionData, NodeConnectionTypes,
 } from 'n8n-workflow';
 
 export class MyServiceTrigger implements INodeType {
   description: INodeTypeDescription = {
     displayName: 'My Service Trigger',
     name: 'myServiceTrigger',
+    icon: 'file:myservice.svg',
     group: ['trigger'],
     version: 1,
+    subtitle: 'new items',
     description: 'Starts workflow when new items appear',
     defaults: { name: 'My Service Trigger' },
     inputs: [],
-    outputs: [NodeConnectionType.Main],
+    outputs: [NodeConnectionTypes.Main],
+    usableAsTool: false,
     polling: true,                         // REQUIRED for poll triggers
     credentials: [{ name: 'myServiceApi', required: true }],
     properties: [],
@@ -793,17 +851,22 @@ Long-running listener for message queues, SSE, or WebSocket connections:
 ```typescript
 import {
   ITriggerFunctions, ITriggerResponse, INodeType,
-  INodeTypeDescription, NodeConnectionType,
+  INodeTypeDescription, NodeConnectionTypes,
 } from 'n8n-workflow';
 
 export class MyServiceTrigger implements INodeType {
   description: INodeTypeDescription = {
     displayName: 'My Service Trigger',
     name: 'myServiceTrigger',
+    icon: 'file:myservice.svg',
     group: ['trigger'],
     version: 1,
+    subtitle: '={{$parameter["event"]}}',
+    description: 'Starts workflow on My Service events',
+    defaults: { name: 'My Service Trigger' },
     inputs: [],
-    outputs: [NodeConnectionType.Main],
+    outputs: [NodeConnectionTypes.Main],
+    usableAsTool: false,
     properties: [/* ... */],
   };
 
@@ -838,7 +901,7 @@ export class MyServiceTrigger implements INodeType {
 
 | Mistake | Fix |
 |---------|-----|
-| Trigger node with `inputs: [NodeConnectionType.Main]` | Use `inputs: []` — triggers have NO inputs |
+| Trigger node with `inputs: [NodeConnectionTypes.Main]` | Use `inputs: []` — triggers have NO inputs |
 | Missing `polling: true` on poll trigger | Required for n8n to schedule the poll |
 | Not storing webhook ID in static data | Use `getWorkflowStaticData('node')` to persist between restarts |
 | `poll()` returning empty array instead of null | Return `null` for no new data (empty array triggers with no items) |
@@ -863,12 +926,12 @@ nodes/MyNode/
 The main file:
 
 ```typescript
-import { INodeTypeBaseDescription, IVersionedNodeType } from 'n8n-workflow';
-import { NodeVersionedType } from 'n8n-core';
+import type { INodeTypeBaseDescription, IVersionedNodeType } from 'n8n-workflow';
+import { VersionedNodeType } from 'n8n-workflow';
 import { MyNodeV1 } from './v1/MyNodeV1.node';
 import { MyNodeV2 } from './v2/MyNodeV2.node';
 
-export class MyNode extends NodeVersionedType {
+export class MyNode extends VersionedNodeType {
   constructor() {
     const baseDescription: INodeTypeBaseDescription = {
       displayName: 'My Node',
@@ -889,6 +952,45 @@ export class MyNode extends NodeVersionedType {
 }
 ```
 
+### Feature-Based Versioning
+
+Instead of splitting into separate version classes, a single node can gate functionality by named feature flags. Declare a `features` object on the description — each key maps a feature name to a `'@version'` condition (evaluated against the node's `typeVersion`):
+
+```typescript
+description: INodeTypeDescription = {
+  // ...
+  version: [1, 1.1, 1.2],
+  defaultVersion: 1.2,
+  features: {
+    bulkOperations: { '@version': [{ _cnd: { gte: 1.2 } }] },
+  },
+  properties: [
+    {
+      displayName: 'Batch Size',
+      name: 'batchSize',
+      type: 'number',
+      default: 100,
+      displayOptions: {
+        show: { '@feature': ['bulkOperations'] },  // Only shown when the feature is enabled
+      },
+    },
+  ],
+};
+```
+
+- `features` is typed as `Record<string, { '@version': Array<number | DisplayCondition> }>` (`NodeFeaturesDefinition` in n8n-workflow).
+- In `displayOptions`, `show: { '@feature': ['featureName'] }` matches against the list of features enabled for the current node version.
+- At runtime, check inside `execute()` with `this.isNodeFeatureEnabled('bulkOperations'): boolean`.
+
+```typescript
+// In execute():
+if (this.isNodeFeatureEnabled('bulkOperations')) {
+  // Behavior only for typeVersion >= 1.2
+}
+```
+
+The benefit over `'@version'` checks scattered through properties and code: the version-to-capability mapping lives in one place, and renaming or re-versioning a feature is a one-line change.
+
 ## GenericFunctions.ts Pattern
 
 Create a shared helper file to keep your execute method clean:
@@ -901,6 +1003,7 @@ import type {
   ILoadOptionsFunctions,
   IPollFunctions,
   IWebhookFunctions,
+  IHttpRequestMethods,
   IHttpRequestOptions,
   IDataObject,
   JsonObject,
@@ -911,16 +1014,19 @@ const BASE_URL = 'https://api.myservice.com/v1';
 
 export async function myServiceApiRequest(
   this: IExecuteFunctions | IHookFunctions | ILoadOptionsFunctions | IPollFunctions | IWebhookFunctions,
-  method: string,
+  method: IHttpRequestMethods,
   endpoint: string,
   body: IDataObject = {},
   qs: IDataObject = {},
+  uri?: string,                                  // Optional absolute URL override
+  option: Partial<IHttpRequestOptions> = {},     // Extra request options (standard nodes-base pattern)
 ): Promise<any> {
   const options: IHttpRequestOptions = {
     method,
-    url: `${BASE_URL}${endpoint}`,
+    url: uri ?? `${BASE_URL}${endpoint}`,
     body,
     qs,
+    ...option,
   };
   try {
     return await this.helpers.httpRequestWithAuthentication.call(this, 'myServiceApi', options);
@@ -932,7 +1038,7 @@ export async function myServiceApiRequest(
 export async function myServiceApiRequestAllItems(
   this: IExecuteFunctions | IHookFunctions | ILoadOptionsFunctions,
   propertyName: string,
-  method: string,
+  method: IHttpRequestMethods,
   endpoint: string,
   body: IDataObject = {},
   qs: IDataObject = {},
@@ -963,7 +1069,7 @@ The `apiRequestAllItems` function above uses page-number pagination. Here are th
 ```typescript
 export async function myServiceApiRequestAllItems(
   this: IExecuteFunctions,
-  method: string,
+  method: IHttpRequestMethods,
   endpoint: string,
   body: IDataObject = {},
   qs: IDataObject = {},
@@ -987,7 +1093,7 @@ export async function myServiceApiRequestAllItems(
 export async function myServiceApiRequestAllItems(
   this: IExecuteFunctions,
   propertyName: string,
-  method: string,
+  method: IHttpRequestMethods,
   endpoint: string,
   body: IDataObject = {},
   qs: IDataObject = {},
@@ -1071,7 +1177,7 @@ const creds = await this.getCredentials<{ apiKey: string; baseUrl: string }>('my
 
 ```typescript
 this.continueOnFail(): boolean;                   // Check if user enabled "Continue On Fail"
-this.getMode(): WorkflowExecuteMode;              // 'manual' | 'trigger' | 'webhook' | 'cli' | 'retry' | 'internal' | 'error' | 'integrated' | 'evaluation' | 'chat'
+this.getMode(): WorkflowExecuteMode;              // 'manual' | 'trigger' | 'webhook' | 'cli' | 'retry' | 'internal' | 'error' | 'integrated' | 'evaluation' | 'chat' | 'agent'
 this.evaluateExpression(expression: string, itemIndex: number): NodeParameterValueType;  // Evaluate n8n expressions dynamically
 this.getWorkflowDataProxy(itemIndex: number): IWorkflowDataProxyData;  // Access $json, $items(), $node, $parameter, $env, etc.
 this.getExecuteData(): IExecuteData;
@@ -1371,12 +1477,17 @@ export class MyService implements INodeType {
         const tableId = this.getNodeParameter('tableId') as string;
         const response = await myServiceApiRequest.call(this, 'GET', `/tables/${tableId}/columns`);
         return {
+          // ResourceMapperField requires `display` (false hides the field entirely)
+          // and `type` must be a FieldType:
+          // 'string' | 'number' | 'boolean' | 'dateTime' | 'time' | 'array' | 'object' | 'options'
           fields: (response.columns as IDataObject[]).map((col) => ({
             id: col.id as string,
             displayName: col.name as string,
             required: col.required as boolean,
-            type: col.type as string,
             defaultMatch: col.isPrimary as boolean,
+            display: true,
+            canBeUsedToMatch: true,
+            type: 'string',
           })),
         };
       },
@@ -1444,7 +1555,7 @@ Nodes can route items to different outputs. The return value is `INodeExecutionD
 export class MyRouter implements INodeType {
   description: INodeTypeDescription = {
     // ...
-    outputs: [NodeConnectionType.Main, NodeConnectionType.Main],  // Two outputs
+    outputs: [NodeConnectionTypes.Main, NodeConnectionTypes.Main],  // Two outputs
     outputNames: ['Matched', 'Unmatched'],
     // ...
   };
@@ -1474,7 +1585,7 @@ outputs: `={{
   ((parameters) => {
     const rules = parameters.rules?.rules ?? [];
     return rules.map(value => ({
-      type: "${NodeConnectionType.Main}",
+      type: "${NodeConnectionTypes.Main}",
       displayName: value.outputKey
     }));
   })($parameter)
@@ -1587,17 +1698,18 @@ const response = await this.helpers.httpRequestWithAuthentication.call(
 
 ### Upload via FormData (Multipart)
 
-```typescript
-import FormData from 'form-data';
+Use the built-in global `FormData` (Node 18+/undici) — no import needed:
 
+```typescript
 const binaryData = this.helpers.assertBinaryData(i, 'data');
 const buffer = await this.helpers.getBinaryDataBuffer(i, 'data');
 
 const formData = new FormData();
-formData.append('file', buffer, {
-  filename: binaryData.fileName,
-  contentType: binaryData.mimeType,
-});
+formData.append(
+  'file',
+  new Blob([buffer], { type: binaryData.mimeType }),
+  binaryData.fileName,
+);
 formData.append('name', fileName);
 
 const response = await this.helpers.httpRequestWithAuthentication.call(
@@ -1605,10 +1717,12 @@ const response = await this.helpers.httpRequestWithAuthentication.call(
     method: 'POST',
     url: 'https://api.example.com/files',
     body: formData,
-    headers: formData.getHeaders(),
+    // No manual getHeaders() — a FormData body auto-sets multipart/form-data
   },
 );
 ```
+
+> **Caveat:** never `import FormData from 'form-data'` — the npm package is not on the import allowlist (`@n8n/community-nodes/no-restricted-imports`, error) and a runtime dependency also fails the `no-runtime-dependencies` requirement for verified nodes.
 
 ### Download Attachments into Binary Properties
 
@@ -1644,9 +1758,11 @@ returnData.push({
 
 ### Rate Limiting with Retry
 
-Real pattern from Slack integration — respects `Retry-After` header:
+Real pattern from Slack integration — respects `Retry-After` header. Use `sleep` from n8n-workflow, never `setTimeout` (a restricted global under `@n8n/community-nodes/no-restricted-globals` — using it makes the package ineligible for n8n Cloud verification):
 
 ```typescript
+import { sleep } from 'n8n-workflow';
+
 export async function myServiceApiRequestWithRetry(
   this: IExecuteFunctions,
   method: IHttpRequestMethods,
@@ -1664,7 +1780,7 @@ export async function myServiceApiRequestWithRetry(
       if ((error as any).httpCode === '429' && retryCount < maxRetries) {
         const retryAfter = (error as any).headers?.['retry-after'];
         const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 30_000;
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        await sleep(waitMs);
         retryCount++;
         continue;
       }
@@ -1676,7 +1792,7 @@ export async function myServiceApiRequestWithRetry(
 
 ### Link-Header Pagination
 
-Used by GitHub, Shopify, and similar APIs:
+Used by GitHub, Shopify, and similar APIs. Requires the extended helper signature from the GenericFunctions.ts template above (`uri?: string` override plus `option: Partial<IHttpRequestOptions>`). Use `returnFullResponse: true` to get `{ body, headers, statusCode, statusMessage }` — the old `resolveWithFullResponse` belongs to the deprecated `IRequestOptions` interface:
 
 ```typescript
 export async function myServiceApiRequestAllItems(
@@ -1691,7 +1807,7 @@ export async function myServiceApiRequestAllItems(
 
   do {
     const response = await myServiceApiRequest.call(
-      this, method, endpoint, body, qs, uri, { resolveWithFullResponse: true },
+      this, method, endpoint, body, qs, uri, { returnFullResponse: true },
     );
 
     returnData.push(...(response.body as IDataObject[]));

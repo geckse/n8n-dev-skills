@@ -1,7 +1,7 @@
 {
   "name": "n8n-node-builder",
-  "description": "Agent skills for building custom n8n community nodes — scaffolding, implementation, testing, and publishing using official best practices.",
-  "version": "1.1.0",
+  "description": "Agent skills for building custom n8n community nodes — scaffolding, implementation, validation, testing, and publishing using official best practices. Includes a gate-based self-validation protocol (lint, build, cloud-support, runtime, verification scan) and AI sub-node support.",
+  "version": "1.2.0",
   "author": {
     "name": "geckse"
   }

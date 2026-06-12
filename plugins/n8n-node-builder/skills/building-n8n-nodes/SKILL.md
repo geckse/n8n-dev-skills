@@ -1,21 +1,23 @@
 ---
 name: building-n8n-nodes
-description: "Builds custom community nodes for n8n, the workflow automation platform. Activates when the user wants to create, scaffold, develop, test, lint, or publish an n8n node — including both declarative (REST API) and programmatic styles. Also triggers when the user mentions n8n nodes, n8n-cli, n8n-node, community nodes, node credentials, or anything related to extending n8n with custom integrations. Encodes all official best practices from n8n's documentation."
+description: "Builds custom community nodes for n8n, the workflow automation platform. Activates when the user wants to create, scaffold, develop, validate, test, lint, or publish an n8n node — including declarative (REST API), programmatic, and AI sub-node (chat model/memory) styles. Also triggers when the user mentions n8n nodes, n8n-cli, n8n-node, community nodes, node credentials, node linting, cloud-support, the community package verification scan, or anything related to extending n8n with custom integrations. Encodes the official n8n-node CLI toolchain, all current best practices, and a gate-based self-validation protocol for proving a node works."
 ---
 
 # n8n Node Builder
 
-Build production-ready custom nodes for n8n using the official `n8n-node` CLI tool and n8n's best practices.
+Build production-ready custom nodes for n8n using the official `n8n-node` CLI tool and n8n's best practices — and prove they work with the validation gate protocol.
 
 ## When You Need More Detail
 
-This skill uses progressive disclosure. The SKILL.md covers the full workflow and decision-making. For complete code templates, read these reference files:
+This skill uses progressive disclosure. The SKILL.md covers the full workflow and decision-making. For complete code templates and protocols, read these reference files:
 
-- `references/declarative-node.md` — Full declarative node template with routing, credentials, and codex file
-- `references/programmatic-node.md` — Full programmatic node template with execute method, error handling, item linking, and trigger patterns
-- `references/credentials.md` — All credential/auth patterns (API key, Bearer, OAuth2, Basic, Custom, testedBy)
-- `references/publishing.md` — Linting, testing, releasing, and verification checklist
-- `references/common-mistakes.md` — Error catalog with 36 numbered mistake patterns and fixes
+- `references/declarative-node.md` — Full declarative node template with routing, credentials, codex, and advanced patterns (preSend/postReceive, pagination, resourceLocator/resourceMapper, customOperations, hints)
+- `references/programmatic-node.md` — Full programmatic node template with execute method, error handling, item linking, trigger patterns, and versioning
+- `references/credentials.md` — All credential/auth patterns (API key, Bearer, OAuth2, Basic, Custom, testedBy, preAuthentication)
+- `references/validation.md` — The agent self-validation gate protocol: lint rule catalog, build, runtime testing, cloud-support, release prechecks, verification scan
+- `references/ai-nodes.md` — AI sub-nodes: chat model and memory nodes via supplyData() and @n8n/ai-node-sdk
+- `references/publishing.md` — Releasing, GitHub Actions publishing with provenance, and the verification checklist
+- `references/common-mistakes.md` — Error catalog of numbered mistake patterns and fixes
 
 Read the appropriate reference file before writing any code.
 
@@ -23,32 +25,30 @@ Read the appropriate reference file before writing any code.
 
 Building an n8n node follows this sequence:
 
-1. **Decide** on the node style (declarative vs programmatic)
+1. **Decide** on the node style (declarative vs programmatic vs AI sub-node)
 2. **Scaffold** the project with the `n8n-node` CLI
-3. **Implement** the node base file, credentials file, and codex file
-4. **Test** locally with `npm run dev`
-5. **Lint** with `npm run lint`
-6. **Publish** to npm and optionally submit for verification
+3. **Implement** the node base file, credentials file, codex file, and icon
+4. **Validate** with the gate protocol (lint → build → cloud-support → runtime)
+5. **Release** via `n8n-node release` and GitHub Actions, then submit for verification
 
 ## Step 1: Choose Your Node Style
 
-n8n has two node-building styles. Picking the right one up front saves significant rework.
+n8n has two main node-building styles plus the AI sub-node paradigm. Picking the right one up front saves significant rework.
 
 ### Declarative Style (preferred for REST APIs)
 
 Use declarative when the integration is a REST API wrapper. It's JSON-based, simpler, more future-proof, and faster to get approved for n8n Cloud.
 
-The declarative style handles data flow through a `routing` key inside the operations object. There's no `execute()` method — n8n constructs HTTP requests from the JSON description automatically.
-
-Declarative nodes support advanced patterns beyond simple routing: declarative dynamic dropdowns via `typeOptions.loadOptions.routing` with `setKeyValue`/`sort` postReceive transforms, dynamic property paths using `$parent`/`$index` expressions for nested body structures, routing on any parameter field (not just operations), `preSend` functions (including factory patterns) to transform request bodies before sending, custom `postReceive` functions to transform responses (including binary file handling with `binaryData` type), custom pagination functions with duplicate detection, three pagination modes (offset, generic token-based, and cursor-based via custom functions), `resourceLocator` parameters for multi-mode entity selection (list/URL/ID), `resourceMapper` for dynamic field mapping UIs, `fixedCollection` for structured filters/sort rules, advanced `displayOptions` with `_cnd` operators (eq, not, gte, lte, startsWith, includes, regex, exists, etc.) and `@version`/`@tool` special keys, `ignoreHttpStatusErrors` for custom error handling in postReceive, conditional transforms with `enabled`/`errorMessage` on all postReceive types, `propertyInDotNotation` control for literal dot keys, dynamic base URLs from credentials, and a `methods` object for `listSearch`, `loadOptions`, and `resourceMapping`. See `references/declarative-node.md` → "Advanced Declarative Patterns" for complete templates and a TypeScript type reference.
+The declarative style handles data flow through a `routing` key inside the operations object. There's no `execute()` method — n8n constructs HTTP requests from the JSON description automatically. Declarative nodes go far beyond simple routing: `preSend`/`postReceive` transform functions, three pagination modes, declarative dynamic dropdowns, `resourceLocator`/`resourceMapper`/`fixedCollection` parameters, advanced `displayOptions` conditions, and binary file handling are all available. See `references/declarative-node.md` → "Advanced Declarative Patterns" for the complete templates and a TypeScript type reference.
 
 **Choose declarative when:**
 - The API is REST-based
 - You want a simpler, lower-risk codebase
 - Even if you need custom request/response transformation (use `preSend`/`postReceive` functions)
-- Even if you need file upload/download (use `preSend` with form-data, `postReceive` with binary data)
+- Even if you need file upload/download (use `preSend` with the global `FormData`, `postReceive` with binary handling)
 - Even if you need dynamic field mapping (use `resourceMapper`)
 - Even if you need custom pagination logic (use custom pagination functions)
+- Even if one or two operations need full programmatic control — use `customOperations` to implement just those resource/operation pairs as programmatic functions while routing handles the rest (a node must not define both `execute()` and `customOperations`)
 
 ### Programmatic Style (required for advanced use cases)
 
@@ -59,10 +59,15 @@ Use programmatic when you need full control over execution. It requires an `exec
 - GraphQL APIs
 - Non-REST protocols
 - Complex multi-step logic that chains multiple sequential API calls where later calls depend on earlier results
+- Full versioning (separate implementations per major version via `VersionedNodeType`) — declarative nodes support only light versioning, so choose programmatic if you anticipate breaking-change versions
+
+### AI Sub-Nodes (chat models, memory)
+
+If the goal is to plug a model or memory provider INTO the AI Agent (rather than exposing API operations the agent can call as tools), build an AI sub-node: `supplyData()` instead of `execute()`, AI connection types instead of Main, and the `@n8n/ai-node-sdk`. Read `references/ai-nodes.md`. For "let the agent use my node as a tool", a regular node with `usableAsTool: true` is all you need.
 
 ### Quick Decision
 
-Ask: "Is this a REST API with no triggers and no multi-call chaining?" If yes → declarative (even for complex request/response transformation, pagination, file handling, and field mapping — use `preSend`/`postReceive` functions). Otherwise → programmatic.
+Ask: "Is this a REST API with no triggers and no multi-call chaining?" If yes → declarative (even for complex transformation, pagination, file handling, and field mapping — and `customOperations` covers isolated exceptions). Building a model/memory provider for AI Agents → AI sub-node. Otherwise → programmatic.
 
 ## Step 2: Scaffold with the n8n-node CLI
 
@@ -74,17 +79,23 @@ The CLI sets up the correct project structure, dependencies, linter config, and 
 npm create @n8n/node@latest n8n-nodes-<YOUR_NODE_NAME> -- --template <template>
 ```
 
-Templates:
-- `declarative/github-issues` — Demo with multiple operations and credentials (good for learning)
-- `declarative/custom` — Blank declarative starting point (prompts for base URL, auth type)
-- `programmatic/example` — Programmatic with full flexibility
-
 ### Option B: Install globally
 
 ```bash
 npm install --global @n8n/node-cli
 n8n-node new n8n-nodes-<YOUR_NODE_NAME> --template <template>
 ```
+
+Templates:
+- `declarative/github-issues` — Demo with multiple operations and credentials (good for learning)
+- `declarative/custom` — Blank declarative starting point (prompts interactively for base URL and auth type)
+- `programmatic/example` — Programmatic with full flexibility
+- `programmatic/openai-chat-model` — AI sub-node: chat model for OpenAI-compatible APIs
+- `programmatic/custom-chat-model` — AI sub-node: chat model for custom protocols (skeleton)
+- `programmatic/custom-chat-model-example` — AI sub-node: custom chat model with worked example
+- `programmatic/custom-chat-memory` — AI sub-node: conversation memory
+
+Useful flags for non-interactive (agent) runs: `--skip-install` (skip dependency installation) and `--force` (overwrite an existing directory). Note that `declarative/custom` still prompts for base URL and auth type — prefer `declarative/github-issues` or `programmatic/example` when running fully unattended, or answer the prompts.
 
 ### Option C: Clone the n8n-nodes-starter repo
 
@@ -109,15 +120,17 @@ After scaffolding, the project looks like:
 n8n-nodes-<name>/
 ├── package.json          # Must contain "n8n" attribute listing nodes and credentials
 ├── tsconfig.json
-├── .eslintrc.js          # Don't edit — contains n8n linter config
+├── eslint.config.mjs     # Don't edit — two-line flat config importing from '@n8n/node-cli/eslint';
+│                         # with "n8n": { "strict": true }, lint fails if this file is modified
+├── .github/workflows/    # ci.yml (lint + build on push) and publish.yml (npm publish with provenance)
 ├── nodes/
 │   └── <NodeName>/
 │       ├── <NodeName>.node.ts      # Base file — the node's core logic
 │       ├── <NodeName>.node.json    # Codex file — metadata for n8n's node panel
-│       └── <NodeName>.svg          # Icon — square SVG recommended
+│       └── <NodeName>.svg          # Icon — square SVG (required by lint)
 ├── credentials/
 │   └── <NodeName>Api.credentials.ts  # Credential file
-└── dist/                 # Built output (generated by build command)
+└── dist/                 # Built output (generated by npm run build = n8n-node build)
 ```
 
 ## Step 3: Implement the Node
@@ -129,15 +142,15 @@ Every node needs three files at minimum: the base file, the codex file, and the 
 This is the heart of the node. It exports a class implementing `INodeType` with a `description` object.
 
 **Critical rules:**
-- The class name must match the filename (e.g., class `Acme` → file `Acme.node.ts`)
-- Use `NodeConnectionType.Main` for inputs/outputs (imported from `n8n-workflow`). If your `n8n-workflow` version exports it as type-only, use the string `'main'` as fallback
+- The class name must match the filename (e.g., class `Acme` → file `Acme.node.ts`) — lint enforces this
+- Use `NodeConnectionTypes.Main` for inputs/outputs — the **plural** const object, imported as a value from `n8n-workflow` (`import { NodeConnectionTypes } from 'n8n-workflow'`). The singular `NodeConnectionType` is type-only and cannot be used as a value. Never use the string `'main'` — it fails the `node-connection-type-literal` lint rule
 - The `name` field in the description must be a camelCase unique identifier
 - Use Title Case for `displayName` and all UI-facing strings
 - Always set `noDataExpression: true` on Resource and Operation selectors
 - Always include `action` on every operation option (e.g., `action: 'Create a contact'`)
-- Use `import type` for symbols only used in type annotations (rule of thumb: if a symbol only appears in `: Type` annotations, function signatures, or `as Type` casts, use `import type`; if it's used as a value like `throw new NodeApiError(...)`, use regular import)
+- Use `import type` for symbols only used in type annotations (rule of thumb: if a symbol only appears in `: Type` annotations or `as Type` casts, use `import type`; if it's used as a value like `throw new NodeApiError(...)` or `NodeConnectionTypes.Main`, use a regular import)
 - Dynamic expressions in routing must start with `=` prefix: `'=/contacts/{{$parameter["id"]}}'`
-- **Declarative nodes cannot have an `execute()` method** — if `requestDefaults` is present, n8n uses the routing engine and ignores `execute()`. Use one or the other
+- **Use routing OR `execute()`, never both** — if a node defines `execute()`, n8n calls it and silently ignores the declarative routing/`requestDefaults` config (the routing engine is only used when the node has no `execute`/`supplyData`/`poll`/`trigger` method)
 - The `execute()` method must return `[returnData]` — an array of arrays (one per output connector). Forgetting the outer array is a common error
 
 **Standard description parameters** (same for both styles):
@@ -146,41 +159,22 @@ This is the heart of the node. It exports a class implementing `INodeType` with 
 |-----------|------|---------|
 | `displayName` | string | Name shown in the UI |
 | `name` | string | Internal camelCase identifier |
-| `icon` | string | `'file:<name>.svg'` — reference the icon file |
+| `icon` | string or object | `'file:<name>.svg'` or `{ light: 'file:a.svg', dark: 'file:a.dark.svg' }` |
+| `iconColor` | string | Preset theme color, e.g. `'orange-red'` (use instead of deprecated `defaults.color`) |
 | `group` | string[] | `['transform']` for action nodes, `['trigger']` for triggers |
 | `version` | number or number[] | Start at `1`; use array for light versioning |
-| `subtitle` | string | Template shown below node name, e.g. `'={{$parameter["operation"]}}'` |
+| `subtitle` | string | Template shown below node name, e.g. `'={{$parameter["operation"]}}'` — required by lint |
 | `description` | string | Short description for the node panel |
 | `defaults` | object | `{ name: 'Display Name' }` |
-| `inputs` | array | `[NodeConnectionType.Main]` |
-| `outputs` | array | `[NodeConnectionType.Main]` |
-| `usableAsTool` | boolean | `true` — enables use as an AI agent tool (recommended) |
+| `inputs` | array | `[NodeConnectionTypes.Main]` |
+| `outputs` | array | `[NodeConnectionTypes.Main]` |
+| `usableAsTool` | boolean | Must be declared (lint error otherwise); set `true` unless there's a reason not to |
 | `credentials` | array | `[{ name: 'credName', required: true }]` |
 | `properties` | array | Resource, operation, and field definitions |
 
-**For declarative nodes**, also add:
-- `requestDefaults: { baseURL: '...', headers: { Accept: 'application/json' } }` — supports dynamic expressions from credentials (e.g., `'={{ !$credentials.customBaseUrl ? "https://api.example.com/v1" : $credentials.baseUrl }}'`)
-- Operations use a `routing` key to define HTTP method, URL, query strings, and body — use `encodeURIComponent()` for user values in URLs
-- `routing` can be placed on any parameter (not just operations) — fields, fixedCollections, etc.
-- Use `typeOptions.loadOptions.routing` for declarative dynamic dropdowns with `setKeyValue`/`sort` postReceive transforms
-- Use dynamic property paths with `$parent`, `$index` expressions (e.g., `'=attributes.{{$parent.fieldName}}'`, `'=items[{{$index}}].value'`)
-- Operations can use `routing.send.preSend` array for custom request transformation functions
-- Operations can use `routing.output.postReceive` array for custom response transformation (including binary file handling)
-- Operations can use `routing.operations.pagination` for custom pagination functions
-- Use `type: 'resourceLocator'` for multi-mode entity selection (list/URL/ID) with `methods.listSearch`
-- Use `type: 'resourceMapper'` for dynamic field mapping UIs with `methods.resourceMapping`
-- Use `type: 'fixedCollection'` for structured parameter groups (filters, sort rules) with `$index` for array mapping
-- Combine `displayOptions.show` and `displayOptions.hide` for fine-grained field visibility
-- Split operations/fields into separate `*Description.ts` files per resource, spread into the main node
-- Define a `methods` object on the class for `listSearch`, `loadOptions`, and `resourceMapping`
+**For declarative nodes**, also add `requestDefaults` (baseURL, headers — supports dynamic expressions from credentials) and `routing` keys on operations and parameters. The full pattern language — `preSend`/`postReceive` functions, pagination, dynamic property paths with `$parent`/`$index`, declarative dropdowns, `resourceLocator`/`resourceMapper`/`fixedCollection`, and the `methods` object for `listSearch`/`loadOptions`/`resourceMapping` — is in `references/declarative-node.md`.
 
-**For programmatic nodes**, also add:
-- An `async execute()` method
-- Proper item looping with `this.getInputData()` and `pairedItem` linking
-
-For complete templates, read the appropriate reference file before coding:
-- Declarative → Read `references/declarative-node.md`
-- Programmatic → Read `references/programmatic-node.md`
+**For programmatic nodes**, also add an `async execute()` method with proper item looping via `this.getInputData()` and `pairedItem` linking — see `references/programmatic-node.md`.
 
 ### 3B: The Resource → Operation Pattern
 
@@ -196,7 +190,7 @@ For list ("Get Many") operations, always include a `returnAll` boolean toggle (d
 
 ### 3C: displayOptions and Conditional Fields
 
-Use `displayOptions.show` to conditionally display fields based on the selected resource, operation, or other parameter values (e.g., `show: { resource: ['contact'], operation: ['create'] }`). For version-specific fields, use `'@version'`: `displayOptions: { show: { '@version': [2] } }`.
+Use `displayOptions.show` to conditionally display fields based on the selected resource, operation, or other parameter values (e.g., `show: { resource: ['contact'], operation: ['create'] }`). For version-specific fields, use `'@version'`: `displayOptions: { show: { '@version': [2] } }`. Advanced `_cnd` condition operators (gte, startsWith, regex, ...) and the `@tool`/`@feature` special keys are documented in `references/declarative-node.md`.
 
 ### 3D: Additional Fields (Optional Parameters)
 
@@ -224,10 +218,12 @@ Metadata controlling how the node appears in n8n's node discovery panel:
 
 ```json
 {
-  "node": "n8n-nodes-<package>.<nodeName>",
+  "node": "n8n-nodes-<package>",
   "nodeVersion": "1.0",
   "codexVersion": "1.0",
   "categories": ["Miscellaneous"],
+  "subcategories": { "Miscellaneous": ["Helpers"] },
+  "alias": ["synonym", "former-product-name"],
   "resources": {
     "credentialDocumentation": [{ "url": "" }],
     "primaryDocumentation": [{ "url": "" }]
@@ -235,7 +231,7 @@ Metadata controlling how the node appears in n8n's node discovery panel:
 }
 ```
 
-The `node` field format is `<npm-package-name>.<node-internal-name>` (e.g., `n8n-nodes-acme.acmeService`).
+Set the `node` field to the npm package name (e.g., `"n8n-nodes-acme"`), as the official CLI templates do. At runtime n8n only consumes `categories`, `subcategories`, `resources`, and `alias` — `alias` strings are matched by the nodes-panel search, so add common synonyms and former product names.
 
 Categories: Analytics, Communication, Data & Storage, Development, Finance & Accounting, Marketing & Content, Miscellaneous, Productivity, Sales, Utility.
 
@@ -244,23 +240,24 @@ Categories: Analytics, Communication, Data & Storage, Development, Finance & Acc
 Read `references/credentials.md` for complete patterns. Key points:
 - File: `credentials/<Name>Api.credentials.ts`
 - Class implements `ICredentialType`
-- `name` must match the node's `credentials[].name`
+- `name` must match the node's `credentials[].name` — and lint enforces naming: `name` starts lowercase and ends in `Api`, the class name ends in `Api` (OAuth2: `OAuth2Api`)
 - Use `authenticate: IAuthenticateGeneric` for header/body/query auth
-- Use `test: ICredentialTestRequest` to validate credentials (or `testedBy` in the node for complex validation)
+- Use `test: ICredentialTestRequest` to validate credentials — it runs automatically when the user saves the credential. Customize pass/fail with `test.rules`; use `testedBy` in the node for complex validation. OAuth2 credentials extending `oAuth2Api` are exempt (don't add `test` to them)
+- For session-token APIs, use `preAuthentication` to exchange long-lived credentials for a token before requests
 - Always use `$credentials` (plural) in expressions — `$credential` (singular) is wrong
 - The linter requires an `icon` property using `Icon` type from n8n-workflow
 
 ### 3G: The Icon
 
-SVG is recommended (square aspect ratio). PNG alternative: 60×60px. Place alongside the `.node.ts` file. Reference with `icon: 'file:<name>.svg'`. For light/dark variants: `icon: { light: 'file:icon.svg', dark: 'file:icon.dark.svg' }`. Don't reference Font Awesome — download and embed.
+Use a **square SVG** — the `icon-validation` lint rule errors on non-`.svg` icons (the docs' 60×60 PNG alternative fails lint in CLI-scaffolded projects and the verification scan). Place it alongside the `.node.ts` file and reference it with `icon: 'file:<name>.svg'`. For light/dark variants use `icon: { light: 'file:icon.svg', dark: 'file:icon.dark.svg' }` — the two must be different files. Set a brand-ish accent with the top-level `iconColor: '<preset>'` (e.g. `'orange-red'`, one of n8n's preset theme colors); `defaults.color` is deprecated. Don't reference Font Awesome — download and embed.
 
-## Step 4: Error Handling (Programmatic Nodes)
+### 3H: Error Handling (Programmatic Nodes)
 
-Use `NodeApiError` for API errors and `NodeOperationError` for validation errors (both from `n8n-workflow`). Wrap each item's processing in `try/catch` and support `continueOnFail()` so users can choose to keep going on errors — push `{ json: { error: message }, pairedItem: { item: i } }` on failure. See `references/programmatic-node.md` → "Error Handling Patterns" for full examples including HTTP status-specific handling.
+Use `NodeApiError` for API errors and `NodeOperationError` for validation errors (both from `n8n-workflow`). Inside per-item loops, always pass the item index: `throw new NodeApiError(this.getNode(), error as JsonObject, { itemIndex: i })` — the `node-operation-error-itemindex` lint rule requires it. Wrap each item's processing in `try/catch` and support `continueOnFail()` so users can choose to keep going on errors — push `{ json: { error: message }, pairedItem: { item: i } }` on failure. See `references/programmatic-node.md` → "Error Handling Patterns" for full examples including HTTP status-specific handling.
 
-## Step 5: Item Linking (pairedItem / constructExecutionMetaData)
+### 3I: Item Linking (pairedItem / constructExecutionMetaData)
 
-Every output item in a programmatic node must link back to its source input. There are two approaches:
+Every output item in a programmatic node must link back to its source input — the `missing-paired-item` lint rule errors otherwise. Two approaches:
 
 **Modern approach (recommended):** Use `constructExecutionMetaData`:
 ```typescript
@@ -279,9 +276,9 @@ returnData.push({
 });
 ```
 
-Without item linking, n8n can't trace data flow between nodes.
+For multi-input nodes add the input index: `pairedItem: { item: i, input: 0 }`. Without item linking, n8n can't trace data flow between nodes.
 
-## Step 6: HTTP Helpers
+### 3J: HTTP Helpers
 
 Use n8n's built-in helpers — no external HTTP libraries:
 
@@ -295,79 +292,79 @@ const response = await this.helpers.httpRequestWithAuthentication.call(
 );
 ```
 
-**Deprecation warning:** `this.helpers.requestWithAuthentication` and `IRequestOptions` are **deprecated**. Always use `httpRequestWithAuthentication` with `IHttpRequestOptions`. The new interface uses `url` (not `uri`) and defaults to JSON parsing.
+**Deprecation warning:** `this.helpers.requestWithAuthentication` and `IRequestOptions` are **deprecated** (the `no-deprecated-workflow-functions` lint rule flags them). Always use `httpRequestWithAuthentication` with `IHttpRequestOptions`. The new interface uses `url` (not `uri`) and defaults to JSON parsing.
 
-### GenericFunctions.ts Pattern
+For programmatic nodes, create a `GenericFunctions.ts` helper to centralize HTTP logic. Include `IHookFunctions`, `IWebhookFunctions`, and `IPollFunctions` in the `this` type union for trigger node compatibility. Use `loadOptionsMethod` for dropdowns that fetch values from an API at runtime. See `references/programmatic-node.md` for the complete patterns.
 
-For programmatic nodes, create a `GenericFunctions.ts` helper to centralize HTTP logic. Include `IHookFunctions`, `IWebhookFunctions`, and `IPollFunctions` in the `this` type union for trigger node compatibility. See `references/programmatic-node.md` → "GenericFunctions.ts Pattern" for the full template with pagination variants.
-
-### Dynamic Options (loadOptionsMethod)
-
-Use `loadOptionsMethod` for dropdowns that fetch values from an API at runtime. Define a `methods.loadOptions` object in the node class, with each method returning `Array<{ name: string, value: string }>`. See `references/programmatic-node.md` for the complete pattern.
-
-## Step 7: Node Versioning
+### 3K: Node Versioning
 
 **Light versioning** (all node types): Change `version` to an array `[1, 2]` and use `displayOptions: { show: { '@version': [2] } }`.
 
-**Full versioning** (programmatic only): Extend `NodeVersionedType` with separate `v1/`, `v2/` directories. See the Mattermost node on GitHub for a real example.
+**Full versioning** (programmatic only): Extend `VersionedNodeType` — imported from `n8n-workflow` — with separate `v1/`, `v2/` directories and a base description carrying `defaultVersion`. See the Mattermost node on GitHub for a real example and `references/programmatic-node.md` for the template.
 
-## Step 8: Test, Lint, Publish
+**Feature-based versioning**: gate individual behaviors behind feature flags instead of whole versions — see `references/programmatic-node.md`.
+
+### 3L: Hints and Notices
+
+Four mechanisms guide users inside the editor: description-level `hints` (banners in input/output panes or the NDV, with `displayCondition` expressions), parameter-level `hint` text under a field, `type: 'notice'` inline info boxes between parameters, and dynamic post-execution hints via `this.addExecutionHints({ message, location })` inside `execute()` (programmatic only). See `references/declarative-node.md` → "Hints and Notices" and `references/programmatic-node.md`.
+
+## Step 4: Validate (Gate Protocol)
+
+After implementing, **prove** the node works. Run the gates in order; don't proceed past a failure. Full protocol with pass criteria and failure triage: `references/validation.md`.
 
 ```bash
-npm run dev              # Live-reload local n8n with your node
-npm run lint             # Check against n8n standards
-npm run lint -- --fix    # Auto-fix what's possible
-n8n-node release         # Publish to npm (uses release-it)
+npm run lint:fix && npm run lint                 # Gate 1 — strict-config guard + @n8n/eslint-plugin-community-nodes; exit 0, zero errors
+npm run build                                    # Gate 2 — strict tsc + asset copy; '✓ Build successful' + dist paths exist
+npx n8n-node cloud-support                       # Gate 3 — 'Cloud support is ENABLED' (strict mode + default eslint config)
+npm run dev                                      # Gate 4 — local n8n at http://localhost:5678; smoke test node + credentials + operations
 ```
 
-Read `references/publishing.md` for the full publishing and verification checklist.
+| Gate | Pass signal |
+|------|-------------|
+| 0. Structure sanity | package.json checklist (name, keywords, n8n block, peerDeps) all true |
+| 1. Lint | Exit 0, zero errors — never edit `eslint.config.mjs`, never use inline `eslint-disable` (the verification scanner ignores them) |
+| 2. Build | `✓ Build successful`; every `n8n.nodes`/`n8n.credentials` path exists in `dist/` |
+| 3. Cloud support | `✅ Cloud support is ENABLED` |
+| 4. Runtime | `Editor is now accessible`; node findable by displayName; credential test passes on save; operations execute |
+
+**There is no unit-test command** in the n8n-node toolchain — CI runs exactly lint + build, and runtime validation is Gate 4. Don't invent a jest/vitest harness.
+
+## Step 5: Release and Verify
+
+```bash
+npm run release                                  # Gate 5 — release-it: lint+build gates, version bump, changelog, tag, push, GitHub release
+npx @n8n/scan-community-package <package-name>   # Gate 6 — post-publish: provenance check + re-lint of the published artifact
+```
+
+`npm run release` does **NOT** publish to npm from your machine — pushing the version tag triggers the scaffolded `.github/workflows/publish.yml`, which publishes with **npm provenance** (mandatory for verified community nodes since May 1, 2026). Plain `npm publish` is blocked by design via `prepublishOnly: n8n-node prerelease` — don't remove it. One-time setup: `npx n8n-node release --init-workflow` if `publish.yml` is missing, plus npm Trusted Publishing (or an `NPM_TOKEN` secret).
+
+Read `references/publishing.md` for the full release flow, verification scope rules (one service per package, no logic nodes, npm↔GitHub identity), and the Creator Portal submission checklist.
 
 ## Code Standards Summary
 
-- Write in TypeScript; use `import type` for type-only imports (if a symbol only appears in `: Type` annotations or `as Type` casts, use `import type`)
+- Write in TypeScript; use `import type` for type-only imports (a convention from n8n's codebase — keeps value vs type imports honest)
 - Use `httpRequestWithAuthentication` (not the deprecated `requestWithAuthentication`); use `url` not `uri` in `IHttpRequestOptions`
 - Never mutate incoming data — clone with spread or `structuredClone()`
-- No external runtime dependencies for verified nodes — use built-in helpers only
-- `n8n-workflow` should be a peer dependency, not bundled
-- Follow Resource → Operation pattern with `noDataExpression: true` on selectors
-- Always include `action` on every operation option
-- Use `constructExecutionMetaData` with `itemData` for proper item linking
-- Implement `continueOnFail()` in every execute loop
+- No runtime dependencies. For cloud-eligible nodes the lint allowlist is exactly: `n8n-workflow`, `@n8n/ai-node-sdk`, `lodash`, `moment`, `p-limit`, `luxon`, `zod`, `crypto`/`node:crypto`, plus relative imports — nothing else (no axios, no form-data; use built-in helpers and globals)
+- No restricted globals in cloud-eligible nodes: use `sleep` from `n8n-workflow` instead of `setTimeout`; no `process`/`__dirname`; no `console.log` (lint error)
+- `n8n-workflow` is a peer dependency, not bundled
+- Follow Resource → Operation pattern with `noDataExpression: true` on selectors; include `action` on every operation option
+- Name list operations **"Get Many"** (not "Get All") and use the `returnAll`/`limit` pair
+- Use `NodeConnectionTypes.Main` (plural const, value import) — never the string `'main'`
+- Declare `usableAsTool` on every node (lint error otherwise); set `true` unless there's a reason not to
+- Use `constructExecutionMetaData` with `itemData` for item linking; every output item needs `pairedItem`
+- Implement `continueOnFail()` in every execute loop; throw `NodeApiError`/`NodeOperationError` with `{ itemIndex }` in loops — never raw `Error`
 - The `execute()` method returns `[returnData]` — don't forget the outer array wrapper
-- Create `GenericFunctions.ts` for shared API request helpers (include `IHookFunctions` and `IWebhookFunctions` in the `this` type for trigger node compatibility)
-- Add `usableAsTool: true` to node descriptions for AI agent compatibility
-- Name list operations **"Get Many"** (not "Get All") — the linter enforces this
-- Use `returnAll` / `limit` pair for list operations
-- Use `displayOptions` for progressive field disclosure
-- Optional params go in "Additional Fields" collections
-- Title Case for UI text; Sentence case for descriptions/hints
-- Trigger nodes: `inputs: []`, `group: ['trigger']`, "Trigger" suffix in `displayName` and class name
+- Create `GenericFunctions.ts` for shared API request helpers (type `method: IHttpRequestMethods`; include `IHookFunctions`/`IWebhookFunctions`/`IPollFunctions` in the `this` union)
+- Use `displayOptions` for progressive field disclosure; optional params go in "Additional Fields" collections
+- Title Case for UI text; sentence case for descriptions/hints; placeholders start with `e.g. `
+- Use `$credentials` (plural) in credential expressions; dynamic routing expressions need the `=` prefix
+- Use `encodeURIComponent()` for user-provided values in routing URLs
+- Declarative: use routing OR `execute()`, never both (defining `execute()` silently disables routing); `customOperations` is the per-operation escape hatch
+- Split multi-resource nodes into `*Description.ts` files per resource, spread into the properties array
 - Reuse internal parameter `value` names across operations
-- Set `"strict": true` in the `n8n` config of `package.json`
-- Use `$credentials` (plural) in credential expressions — `$credential` (singular) won't resolve
-- Dynamic expressions in routing need the `=` prefix: `'=/path/{{$parameter.id}}'`
-- Declarative nodes cannot have `execute()` — use routing OR execute, not both
-- Use `typeOptions.loadOptions.routing` for declarative dynamic dropdowns — chain `rootProperty` → `setKeyValue` → `sort` postReceive transforms
-- Use dynamic property paths: `$parent.fieldName` for nested objects, `$index` for array indexing in fixedCollections
-- Use `encodeURIComponent()` / `encodeURI()` for user-provided values in routing URLs
-- Place `routing` on any parameter that needs it (fields, fixedCollections), not just on operations
-- Split multi-resource nodes into `*Description.ts` files per resource, spread into properties array
-- Use `preSend` functions for custom request body transformation in declarative nodes — they receive and return `IHttpRequestOptions`
-- Use custom `postReceive` functions for response transformation beyond `rootProperty`/`filter`/`limit`/`set`/`setKeyValue`/`sort`/`binaryData` — they receive `(items, response)` and return `INodeExecutionData[]`
-- All postReceive transforms support optional `enabled` (boolean/expression) and `errorMessage` properties
-- For file downloads in declarative nodes, set `returnFullResponse: true` and `encoding: 'arraybuffer'` on the request, then handle binary conversion in `postReceive`
-- For file uploads in declarative nodes, use `preSend` to build `FormData` from `this.helpers.getBinaryDataBuffer()`
-- Use `ignoreHttpStatusErrors: true` on request when you need custom error handling in postReceive
-- Use `propertyInDotNotation: false` on `routing.send` when property names contain literal dots (default is `true`, which creates nested objects)
-- For generic/token-based pagination, use `type: 'generic'` with `$response.body`/`$request` expressions
-- For cursor-based pagination, create a reusable factory function using `IExecutePaginationFunctions` and `makeRoutingRequest()`
-- Use `_cnd` operators in displayOptions for advanced conditions: `{ _cnd: { gte: 2 } }`, `{ _cnd: { startsWith: 'https' } }`, etc.
-- Use `@version`, `@tool`, `@feature` special keys in displayOptions for version/context-specific fields
-- Use `type: 'resourceLocator'` for entity selection (provides list, URL, and ID modes) — requires `methods.listSearch` on the node class
-- Use `type: 'resourceMapper'` for dynamic field mapping (Create/Update) — requires `methods.resourceMapping` on the node class
-- Use `type: 'fixedCollection'` with `multipleValues: true` for repeatable structured parameter groups (filters, sort rules)
-- Combine `displayOptions.show` and `displayOptions.hide` for excluding specific parameter values
-- Pass the linter before publishing — see `references/common-mistakes.md` for the full error catalog
+- Keep `"strict": true` in the `n8n` config of `package.json` and never edit `eslint.config.mjs`
+- Pass the validation gates before publishing — see `references/validation.md` and `references/common-mistakes.md`
 
 ## UX Patterns (Verification Requirements)
 
@@ -379,13 +376,22 @@ These patterns are required for verified community nodes and recommended for all
 
 **AI Tool Output parameter:** For nodes used as AI agent tools, add an "Output" options parameter with three modes: Simplified (same as Simplify above), Raw (all fields), and Selected Fields (user picks which fields to send to the AI agent). This prevents context window overflow.
 
-**Resource Locator:** Use `type: 'resourceLocator'` instead of a plain string input whenever a user needs to select a single item (e.g., a specific document, board, or channel). It offers ID, URL, and "From list" modes. Default to "From list" when available. See the Trello and Google Drive nodes for examples.
+**Resource Locator:** Use `type: 'resourceLocator'` instead of a plain string input whenever a user needs to select a single item (e.g., a specific document, board, or channel). It offers ID, URL, and "From list" modes — default to "From list" when available. `methods.listSearch` is required when a list mode uses `searchListMethod`. See the Trello and Google Drive nodes for examples.
 
 **Sorting options for Get Many:** Enhance list operations by providing sorting options in a dedicated collection below the main "Options" collection.
 
 **Binary data naming:** Don't use "binary data" or "binary property" in field names. Instead use "Input Data Field Name" / "Output Data Field Name".
 
 **Upsert:** When the API supports it, include "Create or Update" as a separate operation alongside Create and Update.
+
+**Copy rules (the verification bar checks these):**
+- Every `placeholder` starts with `e.g. ` — `placeholder: 'e.g. nathan@example.com'`
+- Error messages state what happened AND how to fix it, quote the parameter's display name, and append `[Item X]` with the item index; never use the words "error", "problem", "failure", or "mistake" in messages or descriptions
+- Order required fields by importance, then scope broad→narrow; sort optional fields alphabetically; document defaults in descriptions ("Defaults to false")
+- Trigger nodes name the event parameter **"Trigger on"** (no tooltip)
+- ID fields backed by a dynamic list are named `<Record> Name or ID` with description `Choose a name from the list, or specify an ID using an expression`
+- Sort dropdown options alphabetically (also a lint warning); offer "All" instead of `*`
+- Operation `action` phrasing omits articles and names the resource: `action: 'Update row in sheet'`
 
 ## Trigger Nodes
 
@@ -403,8 +409,14 @@ Triggers are always programmatic. Four patterns:
 - Trigger nodes have `inputs: []` — they have NO inputs
 - Class names and filenames get the `Trigger` suffix (e.g., `MyServiceTrigger`)
 - Use `getWorkflowStaticData('node')` to persist state (webhook IDs, last-checked timestamps) between calls
+- Lint still requires `icon`, `subtitle`, and a declared `usableAsTool` (set `false` for triggers) on the description
+- Webhook triggers must implement the complete `webhookMethods.default` lifecycle (`checkExists`/`create`/`delete`) — the `webhook-lifecycle-complete` lint rule errors otherwise, including on manual-URL webhook nodes
 
 For complete trigger templates with full code examples, read `references/programmatic-node.md` → "Trigger Node Patterns".
+
+## AI Sub-Nodes
+
+To make a model or memory provider pluggable into the AI Agent: implement `supplyData(this: ISupplyDataFunctions, itemIndex)` instead of `execute()`, output an AI connection type (`outputs: [NodeConnectionTypes.AiLanguageModel]` or `AiMemory`), and declare `"aiNodeSdkVersion": 1` plus the `@n8n/ai-node-sdk` peer dependency in package.json (the `ai-node-package-json` lint rule enforces the pairing). Four CLI templates scaffold these. Read `references/ai-nodes.md`.
 
 ## Modular Structure (Complex Nodes)
 

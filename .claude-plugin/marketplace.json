@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "n8n-skills",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Agent skills for building custom n8n community nodes and creating n8n workflows programmatically",
   "owner": {
     "name": "geckse"
@@ -10,8 +10,8 @@
     {
       "name": "n8n-node-builder",
       "source": "./plugins/n8n-node-builder",
-      "description": "Scaffolds, implements, tests, and publishes custom n8n community nodes using official best practices. Covers declarative and programmatic styles, all credential/auth patterns, trigger nodes, and verification requirements.",
-      "version": "1.1.0",
+      "description": "Scaffolds, implements, validates, tests, and publishes custom n8n community nodes using official best practices. Covers declarative and programmatic styles, AI sub-nodes, all credential/auth patterns, trigger nodes, the gate-based validation protocol (lint, build, cloud-support, runtime, verification scan), and verification requirements.",
+      "version": "1.2.0",
       "author": {
         "name": "geckse"
       },

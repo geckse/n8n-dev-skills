@@ -2,6 +2,8 @@
 
 Error catalog for n8n node development. Each entry shows the wrong pattern and the correct fix.
 
+For the full `@n8n/eslint-plugin-community-nodes` rule catalog and the gate-by-gate validation protocol (lint, build, dev runtime, cloud-support, release prechecks, verification scan), see `references/validation.md`. AI sub-node specifics live in `references/ai-nodes.md`.
+
 ## Table of Contents
 
 1. [File Structure Errors](#file-structure-errors)
@@ -33,14 +35,17 @@ Class: export class MyService implements INodeType
 
 **Wrong:** `"name": "myservice-n8n-nodes"` or `"name": "n8n-myservice"`
 
-**Fix:** Package name must start with `n8n-nodes-`:
+**Fix:** Package name must be `n8n-nodes-<name>` or the scoped form `@<org>/n8n-nodes-<name>` — both the CLI name validation and the `package-name-convention` lint rule accept either:
 ```json
 "name": "n8n-nodes-myservice"
+```
+```json
+"name": "@mycompany/n8n-nodes-myservice"
 ```
 
 ### 3. Missing codex file
 
-Every node needs a `.node.json` codex file alongside the `.node.ts` file. Without it, the node won't appear in search or have proper categorization.
+Every node should ship a `.node.json` codex file alongside the `.node.ts` file (n8n recommends it). Without it the node still loads and still appears in the nodes panel (search matches the node name), but it won't be categorized, has no search aliases (codex `alias`), and lacks credential/primary documentation links.
 
 ### 4. Wrong paths in package.json n8n config
 
@@ -84,30 +89,39 @@ options: [
 ]
 ```
 
-### 7. NodeConnectionType.Main — type-only in some versions
+### 7. NodeConnectionType used as a value (it's type-only)
 
-In some `n8n-workflow` versions, `NodeConnectionType` is exported **only as a type** (not a runtime value). Using it as a value will cause: `'NodeConnectionType' cannot be used as a value because it was exported using 'export type'`.
+In current `n8n-workflow`, `NodeConnectionType` is exported **only as a type** — using it as a value fails to compile: `'NodeConnectionType' cannot be used as a value because it was exported using 'export type'`. The runtime value export is the plural const object `NodeConnectionTypes`. (Only very old 1.x versions exported a usable `NodeConnectionType` enum.)
 
-**Preferred (works everywhere):**
+**Wrong:**
 ```typescript
-inputs: [NodeConnectionType.Main],
-outputs: [NodeConnectionType.Main],
+import { NodeConnectionType } from 'n8n-workflow';
+
+inputs: [NodeConnectionType.Main],   // Compile error: type-only export
 ```
 
-**Fallback (if NodeConnectionType is type-only in your n8n-workflow version):**
+**Also wrong — string literals trigger the lint error `@n8n/community-nodes/node-connection-type-literal`:**
 ```typescript
 inputs: ['main'],
 outputs: ['main'],
 ```
 
-Check your installed `n8n-workflow` version. If the import fails at build time, use the string fallback.
+**Fix:** Import the plural const and use it everywhere:
+```typescript
+import { NodeConnectionTypes } from 'n8n-workflow';
+
+inputs: [NodeConnectionTypes.Main],
+outputs: [NodeConnectionTypes.Main],
+```
+
+The `node-connection-type-literal` lint rule is autofixable (`npm run lint:fix`).
 
 ### 8. Trigger node with non-empty inputs
 
 **Wrong:**
 ```typescript
 // Trigger node:
-inputs: [NodeConnectionType.Main],  // Triggers don't have inputs
+inputs: [NodeConnectionTypes.Main],  // Triggers don't have inputs
 ```
 
 **Fix:**
@@ -125,6 +139,22 @@ url: '/contacts/{{$parameter["contactId"]}}'  // Missing = prefix
 **Fix:** Dynamic expressions in routing must start with `=`:
 ```typescript
 url: '=/contacts/{{$parameter["contactId"]}}'  // = prefix required
+```
+
+### 43. Placeholder text not starting with "e.g."
+
+n8n's UX guidelines (checked during verification review) require parameter `placeholder` values that show example content to start with `e.g.`:
+
+**Wrong:**
+```typescript
+{ displayName: 'Email', name: 'email', type: 'string', default: '',
+  placeholder: 'nathan@example.com' }
+```
+
+**Fix:**
+```typescript
+{ displayName: 'Email', name: 'email', type: 'string', default: '',
+  placeholder: 'e.g. nathan@example.com' }
 ```
 
 ## Execute Method Errors
@@ -259,7 +289,7 @@ export class MyServiceApi implements ICredentialType {
 
 ### 18. Including execute() in a declarative node
 
-If `requestDefaults` is present, n8n uses the routing engine. An `execute()` method will be **ignored**. Either use routing OR execute, not both.
+If a node defines `execute()`, n8n runs `execute()` and the declarative routing/`requestDefaults` config is silently **ignored** — n8n only auto-assigns the routing-based execution when the node has no `execute`/`supplyData`/`poll`/`trigger` method. Either use routing OR execute, not both; when both are present, the leftover routing config is the part that does nothing.
 
 ### 19. Missing routing on operation options
 
@@ -298,36 +328,28 @@ export const myPreSend = async function (
 };
 ```
 
-### 26. Missing returnFullResponse for custom postReceive
+### 26. returnFullResponse confusion (declarative vs programmatic)
 
-**Wrong:**
+The declarative routing engine forces `returnFullResponse: true` internally on **every** request, so custom postReceive functions ALWAYS receive the full `IN8nHttpFullResponse` (body, headers, statusCode) — setting `returnFullResponse` in `routing.request` is a no-op. The option only matters for direct `this.helpers.httpRequest` / `httpRequestWithAuthentication` calls in programmatic code.
+
+**Wrong (programmatic node that needs response headers):**
 ```typescript
-routing: {
-  request: {
-    method: 'GET',
-    url: '/files/download',
-    encoding: 'arraybuffer',
-    // Missing returnFullResponse — postReceive won't get headers
-  },
-  output: {
-    postReceive: [handleFileDownload],
-  },
-}
+const response = await this.helpers.httpRequestWithAuthentication.call(this, 'myServiceApi', {
+  method: 'GET',
+  url: 'https://api.example.com/files/download',
+  encoding: 'arraybuffer',
+});
+// response is just the body — no headers or statusCode
 ```
 
-**Fix:** Custom postReceive functions that need response headers require `returnFullResponse: true`:
+**Fix:** Set `returnFullResponse: true` on the programmatic request:
 ```typescript
-routing: {
-  request: {
-    method: 'GET',
-    url: '/files/download',
-    returnFullResponse: true,  // Required for postReceive to receive IN8nHttpFullResponse
-    encoding: 'arraybuffer',
-  },
-  output: {
-    postReceive: [handleFileDownload],
-  },
-}
+const response = await this.helpers.httpRequestWithAuthentication.call(this, 'myServiceApi', {
+  method: 'GET',
+  url: 'https://api.example.com/files/download',
+  returnFullResponse: true,  // response = { body, headers, statusCode }
+  encoding: 'arraybuffer',
+});
 ```
 
 ### 27. Reading resourceLocator value without extractValue
@@ -349,32 +371,27 @@ const teamId = teamIdParam.value as string;
 const teamId = this.getCurrentNodeParameter('teamId', { extractValue: true }) as string;
 ```
 
-### 28. Missing paginate: false on non-list operations
+### 28. Misunderstanding when declarative pagination triggers (it's opt-in)
 
-**Wrong:**
+Pagination is **opt-in**: it only runs when `requestData.paginate` resolves truthy AND `operations.pagination` is defined. `paginate` defaults to undefined (falsy), so a Create/Update/Delete operation with no `routing.send.paginate` anywhere will never paginate — even when `requestOperations.pagination` is configured node-wide. Don't sprinkle `paginate: false` everywhere "just in case".
+
+**When `paginate: false` IS needed:** when another *displayed* property sets `paginate` truthy for this operation — e.g. a shared "Return All" field whose `displayOptions` also show it for this operation. The first `paginate` value set wins, so an explicit `false` on the operation option blocks the shared field's `true`:
+
 ```typescript
-// Create operation without paginate: false
-routing: {
-  request: { method: 'POST', url: '/records' },
-  send: {
-    preSend: [createRecordBody],
-    type: 'body',
-    // Missing paginate: false — may trigger unexpected pagination
+options: [{
+  name: 'Create', value: 'create', action: 'Create a record',
+  routing: {
+    request: { method: 'POST', url: '/records' },
+    send: {
+      paginate: false,  // First value set wins — blocks a displayed shared "Return All" field
+      preSend: [createRecordBody],
+      type: 'body',
+    },
   },
-}
+}]
 ```
 
-**Fix:** Always set `paginate: false` on operations that should not paginate (Create, Update, Delete):
-```typescript
-routing: {
-  request: { method: 'POST', url: '/records' },
-  send: {
-    paginate: false,
-    preSend: [createRecordBody],
-    type: 'body',
-  },
-}
-```
+Hidden properties are skipped entirely, so if the shared field isn't displayed for this operation, no defensive flag is needed.
 
 ### 29. Wrong postReceive function signature
 
@@ -618,23 +635,23 @@ const response = await this.helpers.httpRequestWithAuthentication.call(this, 'my
 { name: 'Get Many', value: 'getAll', action: 'Get many contacts', description: 'Get many contacts' }
 ```
 
-### 22. Missing `import type` for type-only imports
+### 22. Missing `import type` for type-only imports (convention, not enforced)
 
-The linter enforces `import type` for symbols used only as types (not as runtime values).
+The current standard lint setup (the `eslint.config.mjs` supplied by `@n8n/node-cli`, with `@n8n/eslint-plugin-community-nodes` and the legacy n8n-nodes-base rule sets) does NOT enforce `import type` — the old n8n-nodes-starter `.eslintrc.js` did, via `@typescript-eslint/consistent-type-imports`. The n8n templates and built-in nodes still use `import type` consistently, so follow it as a convention:
 
-**Wrong:**
+**Inconsistent with templates:**
 ```typescript
 import { INodeType, INodeTypeDescription, INodeExecutionData } from 'n8n-workflow';
 // INodeExecutionData only used in type annotations, not at runtime
 ```
 
-**Fix:**
+**Preferred:**
 ```typescript
 import type { INodeExecutionData } from 'n8n-workflow';
 import { INodeType, INodeTypeDescription } from 'n8n-workflow';
 ```
 
-**Rule of thumb:** If a symbol is only used in `: TypeName` annotations, function signatures, or `as TypeName` casts, import it with `import type`. If it's used as a value (e.g., `throw new NodeOperationError(...)`, `NodeConnectionType.Main`), use a regular import.
+**Rule of thumb:** If a symbol is only used in `: TypeName` annotations, function signatures, or `as TypeName` casts, import it with `import type`. If it's used as a value (e.g., `throw new NodeOperationError(...)`, `NodeConnectionTypes.Main`), use a regular import.
 
 ### 23. `no-credential-reuse` false positive on Windows
 
@@ -649,15 +666,138 @@ credentials: [
 /* eslint-enable @n8n/community-nodes/no-credential-reuse */
 ```
 
+Note: inline disables only help local lint — n8n's verification scanner ignores them (see mistake 38). That's fine here because this Windows-only false positive doesn't reproduce in the scanner's environment.
+
+### 37. PNG icon fails `icon-validation`
+
+The `@n8n/community-nodes/icon-validation` lint rule requires icons to be SVG files that exist on disk — `.png` (or any non-`.svg`) fails with `Icon file "..." must be an SVG file (end with .svg)`. With the light/dark object form, the two paths must be **different files** (`Light and dark icons cannot be the same file`).
+
+**Wrong:**
+```typescript
+icon: 'file:myservice.png',
+// or:
+icon: { light: 'file:myservice.svg', dark: 'file:myservice.svg' },  // same file
+```
+
+**Fix:**
+```typescript
+icon: 'file:myservice.svg',
+// or, with a real dark variant:
+icon: { light: 'file:myservice.svg', dark: 'file:myservice.dark.svg' },
+```
+
+### 38. Importing `form-data` (or any non-allowlisted package)
+
+The cloud-only rule `@n8n/community-nodes/no-restricted-imports` rejects every import/require/dynamic import that isn't on the allowlist (`n8n-workflow`, `@n8n/ai-node-sdk`, `lodash`, `moment`, `p-limit`, `luxon`, `zod`, `crypto`/`node:crypto`, and relative paths): "n8n Cloud does not allow community nodes with dependencies." `form-data` is the classic offender.
+
+Do NOT reach for `// eslint-disable-next-line` — n8n's verification scanner (`@n8n/scan-community-package`) runs ESLint with `allowInlineConfig: false`, so inline disable comments are **ignored** and the scan still fails.
+
+**Wrong:**
+```typescript
+import FormData from 'form-data';
+```
+
+**Fix:** Use the Node 18+ globals — no import needed:
+```typescript
+const form = new FormData();
+form.append('file', new Blob([buffer]), 'report.pdf');
+```
+
+### 39. NodeApiError/NodeOperationError in item loops without `{ itemIndex }`
+
+The `@n8n/community-nodes/node-operation-error-itemindex` rule (error) flags `new NodeOperationError(...)` or `new NodeApiError(...)` inside item loops in `execute()` that omit `{ itemIndex }` as the third argument. Without it, n8n can't associate the error with the failing item, breaking per-item error reporting and `continueOnFail`.
+
+**Wrong:**
+```typescript
+for (let i = 0; i < items.length; i++) {
+  throw new NodeOperationError(this.getNode(), 'Invalid input');
+}
+```
+
+**Fix:**
+```typescript
+for (let i = 0; i < items.length; i++) {
+  throw new NodeOperationError(this.getNode(), 'Invalid input', { itemIndex: i });
+}
+```
+
+### 40. Webhook trigger with incomplete `webhookMethods`
+
+The `@n8n/community-nodes/webhook-lifecycle-complete` rule (error) requires webhook-based trigger nodes (description declares a non-empty `webhooks` array) to implement the full `webhookMethods` lifecycle — `checkExists`, `create`, AND `delete` in each group. Polling triggers (no `webhooks` array) are exempt.
+
+**Fix:** Implement all three methods:
+```typescript
+webhookMethods = {
+  default: {
+    async checkExists(this: IHookFunctions): Promise<boolean> { /* verify webhook on remote service */ },
+    async create(this: IHookFunctions): Promise<boolean> { /* register webhook */ },
+    async delete(this: IHookFunctions): Promise<boolean> { /* clean up webhook */ },
+  },
+};
+```
+
+### 41. Editing `eslint.config.mjs` → "Strict mode violation"
+
+With `"strict": true` under the `n8n` section of package.json (the scaffold default), `npm run lint` first compares `eslint.config.mjs` against the default template and exits 1 with `Strict mode violation: eslint.config.mjs has been modified from the default configuration` — **before ESLint even runs**. Never edit `eslint.config.mjs`.
+
+**Fix:** Restore the default config:
+```bash
+npx n8n-node cloud-support enable
+```
+
+To intentionally opt out of the cloud-only rules, use `npx n8n-node cloud-support disable` (switches config and strict mode for you) — don't hand-edit the config.
+
+### 42. Using setTimeout/setInterval
+
+The cloud-only rule `@n8n/community-nodes/no-restricted-globals` forbids `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`, `setImmediate`, `clearImmediate`, `process`, `global`/`globalThis`, `__dirname`, and `__filename`.
+
+**Wrong:**
+```typescript
+await new Promise((resolve) => setTimeout(resolve, 1000));
+```
+
+**Fix:** Use `sleep` from `n8n-workflow`:
+```typescript
+import { sleep } from 'n8n-workflow';
+
+await sleep(1000);
+```
+
+### 44. Trigger node description missing icon/subtitle/usableAsTool
+
+Easy to forget on trigger nodes, but these rules apply to ALL node classes:
+
+- `@n8n/community-nodes/require-node-description-fields` (error): the description must define `icon` and `subtitle`.
+- `@n8n/community-nodes/node-usable-as-tool` (error, autofixable): the description must set `usableAsTool`. Only AI sub-nodes (empty inputs + non-Main outputs) are exempt — a regular trigger with `outputs: [NodeConnectionTypes.Main]` is not.
+
+**Fix:**
+```typescript
+description: INodeTypeDescription = {
+  displayName: 'My Service Trigger',
+  name: 'myServiceTrigger',
+  icon: 'file:myservice.svg',
+  subtitle: '={{$parameter["event"]}}',
+  usableAsTool: true,
+  group: ['trigger'],
+  inputs: [],
+  outputs: [NodeConnectionTypes.Main],
+  // ...
+};
+```
+
 ## Publishing Errors
 
 ### 24. `prepublishOnly` script blocks `npm publish`
 
-The n8n-nodes-starter includes a `prepublishOnly` script that runs `n8n-node prerelease`, which blocks direct `npm publish`.
+Projects scaffolded with `npm create @n8n/node` (the n8n-node CLI templates) include a `prepublishOnly` script that runs `n8n-node prerelease`, which blocks direct `npm publish`. That's by design.
 
-**Options:**
-1. Use `npm run release` (uses release-it for versioning + publish)
-2. Remove the `prepublishOnly` script from `package.json` and run `npm publish --access public` directly
+Locally, `npm run release` (= `n8n-node release`) does **NOT** publish to npm: release-it runs with `--npm.publish=false` and only bumps the version, generates the changelog, commits, tags, pushes, and creates a GitHub release. The tag then triggers the scaffolded `.github/workflows/publish.yml` (scaffold it with `n8n-node release --init-workflow` if missing), which publishes to npm with provenance — `RELEASE_MODE=true` is set there so `prerelease` passes.
+
+**Fix:** Run `npm run release` locally and let GitHub Actions do the npm publish.
+
+Do NOT remove `prepublishOnly` to run `npm publish --access public` directly: that skips the lint/build prechecks and produces a package WITHOUT npm provenance, which fails n8n's verification scanner — and from May 1, 2026, all community nodes must be published via GitHub Actions with npm provenance. `n8n-node release --publish` exists only as a last-resort escape hatch for private/unverified packages (no provenance; explicitly discouraged).
+
+See `references/publishing.md` for the full release flow and `references/validation.md` for the release-readiness gate.
 
 ## Quick Fix Reference
 
@@ -671,19 +811,19 @@ The n8n-nodes-starter includes a `prepublishOnly` script that runs `n8n-node pre
 | Expression not resolving | Use `=` prefix: `'=/path/{{$parameter.id}}'` not `'/path/{{$parameter.id}}'` |
 | `requestWithAuthentication` deprecated | Switch to `httpRequestWithAuthentication` with `IHttpRequestOptions` |
 | `uri` property error | Use `url` instead of `uri` in `IHttpRequestOptions` |
-| Missing `usableAsTool` lint warning | Add `usableAsTool: true` to node description |
+| `node-usable-as-tool` lint error | Add `usableAsTool: true` to node description (autofixable) |
 | "Get All" lint error | Change to "Get Many" / "Get many" in name, action, description |
-| `no-credential-reuse` false positive | Move project deeper than drive root, or eslint-disable |
-| `prepublishOnly` blocks publish | Remove the script or use `npm run release` |
-| `NodeConnectionType` type-only error | Use string `'main'` as fallback |
-| `execute()` ignored in declarative node | Remove execute or remove requestDefaults — can't use both |
+| `no-credential-reuse` false positive | Move project deeper than drive root, or eslint-disable (local lint only) |
+| `prepublishOnly` blocks publish | Keep the script; use `npm run release` — GitHub Actions publishes to npm with provenance |
+| `NodeConnectionType` cannot be used as a value | Import the plural const `NodeConnectionTypes` from `n8n-workflow` — never string `'main'` (lint error `node-connection-type-literal`) |
+| `execute()` + `requestDefaults` both present | `execute()` wins, routing is silently ignored — remove one (declarative nodes must not define `execute()`) |
 | `$credential` not resolving | Use `$credentials` (plural) in expressions |
 | Return type error in execute | Return `[returnData]` not `returnData` |
 | Delete returns `{ success: true }` | Use `{ deleted: true }` per n8n UX guidelines |
 | preSend not modifying request | Return the modified `requestOptions` — forgetting to return is a common error |
-| postReceive not receiving headers | Add `returnFullResponse: true` to the operation's `routing.request` |
+| Need response headers in programmatic code | Add `returnFullResponse: true` to the `httpRequest` options (declarative postReceive always gets the full response) |
 | resourceLocator returns object | Use `.value` on the result or pass `{ extractValue: true }` to `getCurrentNodeParameter` |
-| Create/Update triggering pagination | Add `paginate: false` to `routing.send` on non-list operations |
+| Create/Update triggering pagination | Only happens when a displayed property sets `paginate` truthy — add `paginate: false` on the operation (first value set wins) |
 | Custom postReceive wrong signature | Use `(items: INodeExecutionData[], response: IN8nHttpFullResponse)` not `(requestOptions)` |
 | URL breaks with special characters | Use `encodeURIComponent()` in routing URL expressions for user values |
 | Dynamic property path not evaluated | Use `=` prefix and `{{}}`: `'=attributes.{{$parent.fieldName}}'` not `'attributes.$parent.fieldName'` |
@@ -692,3 +832,13 @@ The n8n-nodes-starter includes a `prepublishOnly` script that runs `n8n-node pre
 | Generic pagination loops forever | Use `!!` in `continue` expression: `'={{ !!$response.body?.nextToken }}'` |
 | Custom pagination skips auth | Use `this.makeRoutingRequest()` not `this.helpers.httpRequest()` |
 | Dot in property name creates nesting | Set `propertyInDotNotation: false` on `routing.send` for literal dots |
+| `icon-validation` lint error | Use SVG icons (no PNG); light and dark variants must be different files |
+| `no-restricted-imports` on `form-data` | Use global `FormData`/`Blob` — the verification scanner ignores inline `eslint-disable` comments |
+| `node-operation-error-itemindex` lint error | Pass `{ itemIndex: i }` as third argument to `NodeApiError`/`NodeOperationError` in item loops |
+| `webhook-lifecycle-complete` lint error | Implement all of `checkExists`, `create`, `delete` in `webhookMethods` |
+| "Strict mode violation" exit 1 before ESLint runs | Never edit `eslint.config.mjs` — restore with `npx n8n-node cloud-support enable` |
+| `setTimeout` flagged by `no-restricted-globals` | Use `sleep` from `n8n-workflow` |
+| Placeholder rejected in verification review | Start placeholders with `e.g.` per UX guidelines |
+| `require-node-description-fields` lint error | Add `icon` and `subtitle` to the node description (trigger nodes too) |
+
+Full lint rule catalog and validation gate protocol: `references/validation.md`.

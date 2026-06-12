@@ -18,7 +18,7 @@
         "There is an Additional Fields collection for optional parameters",
         "The credentials file implements ICredentialType with Bearer token in the Authorization header, has an icon property with Icon type, and uses import type for type-only imports",
         "The credentials file has a test property for credential validation",
-        "A codex .node.json file is included with correct node field format (package-name.nodeName)",
+        "A codex .node.json file is included with the node field set to the npm package name, as the official CLI templates do",
         "package.json includes strict: true, files: ['dist'], and peerDependencies for n8n-workflow"
       ]
     },
@@ -45,16 +45,16 @@
     {
       "id": 3,
       "prompt": "I have an existing n8n node for a CRM API. I need to add a v2 that changes how contacts are created — the new version should send data in a different format. How do I add versioning?",
-      "expected_output": "Guidance on choosing between light versioning and full versioning, with code examples. Since the change is to a specific operation's behavior, full versioning with NodeVersionedType is likely appropriate.",
+      "expected_output": "Guidance on choosing between light versioning and full versioning, with code examples. Since the change is to a specific operation's behavior, full versioning with VersionedNodeType is likely appropriate.",
       "files": [],
       "expectations": [
         "The skill explains both light versioning and full versioning options",
         "Light versioning is described as using version array and @version in displayOptions",
-        "Full versioning is described as using NodeVersionedType with separate version directories",
+        "Full versioning is described as using VersionedNodeType (imported from n8n-workflow, not n8n-core) with separate version directories",
         "The skill recommends full versioning for changes to the execute method behavior",
         "The skill notes that full versioning is only available for programmatic-style nodes",
         "Code examples show the directory structure (v1/, v2/ folders)",
-        "The main node file extends NodeVersionedType with defaultVersion set to the latest"
+        "The main node file extends VersionedNodeType with defaultVersion set to the latest"
       ]
     },
     {
@@ -110,8 +110,8 @@
         "Covers credential icon requirement with Icon type",
         "Mentions the $credentials plural expression syntax",
         "Explains the = prefix requirement for dynamic routing expressions",
-        "Notes that execute() is ignored in declarative nodes with requestDefaults",
-        "Mentions the NodeConnectionType.Main type-only fallback to string 'main'"
+        "Notes that defining execute() makes n8n silently ignore the declarative routing config — use routing OR execute(), never both",
+        "Recommends NodeConnectionTypes.Main (the plural const) as a value import and warns that string literals like 'main' fail the node-connection-type-literal lint rule"
       ]
     },
     {
@@ -128,6 +128,54 @@
         "Lists correct node categories including Analytics, Development, Marketing & Content (not Marketing & Growth)",
         "Mentions Upsert (Create or Update) as a standard operation pattern",
         "Mentions sorting options for Get Many operations"
+      ]
+    },
+    {
+      "id": 8,
+      "prompt": "I've finished implementing my n8n community node (scaffolded with n8n-node CLI). Before I publish, walk me through verifying it's actually valid — run whatever checks are needed and tell me exactly what passing looks like.",
+      "expected_output": "An ordered validation protocol: lint:fix then lint (exit 0, zero errors), n8n-node build (exit 0, '✓ Build successful', dist paths from n8n.nodes/n8n.credentials exist), n8n-node cloud-support status (ENABLED), npm run dev runtime smoke test ('Editor is now accessible', node findable by displayName, credential test passes on save), release prechecks (publish.yml exists, clean main branch), and post-publish npx @n8n/scan-community-package.",
+      "files": [],
+      "expectations": [
+        "The skill reads the validation.md reference before answering",
+        "Uses the scaffolded script names: npm run lint, npm run lint:fix (not 'lintfix'), npm run build, npm run dev",
+        "States the lint pass criterion as exit code 0 with zero errors from @n8n/community-nodes rules, and recommends fixing warnings too",
+        "Explains that n8n-node build wipes dist/, runs strict tsc, copies svg/png assets, and exits 1 on type errors",
+        "Verifies that every path in package.json n8n.nodes and n8n.credentials exists in dist/ after build",
+        "Runs n8n-node cloud-support and interprets ENABLED as strict:true plus unmodified eslint.config.mjs",
+        "Describes the dev-mode readiness signal 'Editor is now accessible' at http://localhost:5678 and searching the panel by displayName, not package name",
+        "States there is no unit-test command in the toolchain — CI gates are lint + build, runtime testing happens via n8n-node dev",
+        "Mentions release prechecks: main branch, clean working dir, publish.yml workflow, and that local release does not publish to npm (GitHub Actions publishes with provenance)",
+        "Mentions npx @n8n/scan-community-package as the final verification simulation including the npm provenance check"
+      ]
+    },
+    {
+      "id": 9,
+      "prompt": "npm run lint on my n8n node fails with: 'Strict mode violation: eslint.config.mjs has been modified from the default configuration', and after fixing that I get errors from @n8n/community-nodes/no-restricted-imports for 'axios' and @n8n/community-nodes/credential-password-field for my 'apiToken' field, plus a warning from options-sorted-alphabetically. What do I do?",
+      "expected_output": "Restore the default config via n8n-node cloud-support enable (never hand-edit eslint.config.mjs); replace axios with this.helpers.httpRequest/httpRequestWithAuthentication because n8n Cloud forbids third-party imports (only n8n-workflow, lodash, moment, p-limit, luxon, zod, crypto, ai-node-sdk are allowed); add typeOptions: { password: true } to the apiToken credential field (auto-fixable via lint:fix); sort the options array alphabetically.",
+      "files": [],
+      "expectations": [
+        "Recommends n8n-node cloud-support enable (or restoring the two-line default config) instead of editing eslint.config.mjs",
+        "Does NOT recommend setting strict:false or cloud-support disable as the primary fix",
+        "Does NOT recommend suppressing rules with inline eslint-disable comments (the verification scanner ignores them)",
+        "Identifies no-restricted-imports as a cloud-only rule and lists the allowed import set (n8n-workflow, lodash, moment, p-limit, luxon, zod, crypto, ai-node-sdk)",
+        "Replaces axios usage with this.helpers.httpRequest or httpRequestWithAuthentication",
+        "Fixes credential-password-field by adding typeOptions: { password: true } and notes npm run lint:fix can auto-fix it",
+        "Treats options-sorted-alphabetically as a warning that should still be fixed for verification",
+        "Ends with re-running npm run lint until exit 0"
+      ]
+    },
+    {
+      "id": 10,
+      "prompt": "I want to publish my n8n node and get it verified. I was going to run npm publish from my laptop but it errors with 'Run npm run release to publish the package'. Explain the right release process and what n8n will check after I publish.",
+      "expected_output": "prepublishOnly (n8n-node prerelease) intentionally blocks direct npm publish. The correct flow: ensure .github/workflows/publish.yml exists (n8n-node release --init-workflow), commit everything on main with upstream, run npm run release locally (lints + builds, bumps version, tags, pushes — does NOT publish), the tag triggers GitHub Actions which publishes with npm provenance (mandatory from May 1 2026). Afterwards n8n's scan: npx @n8n/scan-community-package checks provenance then lints the published package with the community-nodes recommended rules.",
+      "files": [],
+      "expectations": [
+        "Explains prepublishOnly/n8n-node prerelease blocks npm publish by design and should not be removed",
+        "States that local n8n-node release does NOT publish to npm by default; GitHub Actions does the publish",
+        "Lists release-it prechecks: requireBranch main, clean working dir, upstream, and lint+build hooks",
+        "Mentions n8n-node release --init-workflow to scaffold publish.yml and the id-token: write permission / trusted publishing setup",
+        "States the May 1 2026 provenance requirement for verified community nodes",
+        "Describes npx @n8n/scan-community-package output (provenance check + ESLint over the published package, inline eslint-disables ignored) as the verification bar"
       ]
     }
   ]
