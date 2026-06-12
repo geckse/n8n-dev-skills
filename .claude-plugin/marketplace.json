@@ -1,8 +1,8 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "n8n-skills",
+  "name": "n8n-dev-skills",
   "version": "1.7.0",
-  "description": "Agent skills for building custom n8n community nodes and creating n8n workflows programmatically",
+  "description": "Agent skills for developers working with n8n — building custom community nodes and authoring workflows as code",
   "owner": {
     "name": "geckse"
   },
